@@ -1,0 +1,5 @@
+/* Ajustes mínimos para la versión estática: una sola tarjeta en vez de dos columnas. */
+.workspace{grid-template-columns:minmax(0,600px)}
+.shell{padding-left:max(34px,env(safe-area-inset-left));padding-right:max(34px,env(safe-area-inset-right))}
+@media(max-width:800px){.shell{padding-left:max(24px,env(safe-area-inset-left));padding-right:max(24px,env(safe-area-inset-right))}}
+@media(max-width:660px){.shell{padding-left:max(17px,env(safe-area-inset-left));padding-right:max(17px,env(safe-area-inset-right))}.workspace{grid-template-columns:1fr}}
