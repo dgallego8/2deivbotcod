@@ -1,0 +1,13 @@
+/* Ajustes mínimos para la versión estática: una sola tarjeta en vez de dos columnas. */
+.workspace{grid-template-columns:minmax(0,600px)}
+.shell{padding-left:max(34px,env(safe-area-inset-left));padding-right:max(34px,env(safe-area-inset-right))}
+@media(max-width:800px){.shell{padding-left:max(24px,env(safe-area-inset-left));padding-right:max(24px,env(safe-area-inset-right))}}
+@media(max-width:660px){.shell{padding-left:max(17px,env(safe-area-inset-left));padding-right:max(17px,env(safe-area-inset-right))}.workspace{grid-template-columns:1fr}}
+.result-actions{padding:14px 13px;border-top:1px solid #dfe7d6;background:#fafcf7}
+.result-actions .button{width:100%}
+.result-actions .feedback{text-align:center}
+.upload-actions{margin-top:14px}
+@media(max-width:660px){.upload-actions{flex-direction:column}.upload-actions .button{flex:none}}
+.main-cards{display:grid;gap:22px}
+.main-cards[hidden],#lock-card[hidden]{display:none}
+.lock-now{margin-top:18px}

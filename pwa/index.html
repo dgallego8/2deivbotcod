@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mi bot · Diccionario</title>
+  <meta name="theme-color" content="#f6f5ef">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Mi bot">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="pwa.css">
+  <script src="vendor/qrcode.min.js" defer></script>
+  <script src="vendor/jsQR.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="page-header">
+      <div class="brand"><span class="brand-icon" aria-hidden="true">↗</span><span>MI BOT <span class="brand-divider">/</span> DICCIONARIO</span></div>
+      <span id="offline-tag" class="local-tag"><span aria-hidden="true"></span> Funciona sin internet</span>
+    </header>
+
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">TU DICCIONARIO, A UN MENSAJE</p>
+      <h1 id="page-title">Escribe una key.<br>Recibe su QR.</h1>
+      <p class="intro-copy">Consulta tu diccionario directamente desde este dispositivo, incluso sin conexión.</p>
+    </section>
+
+    <div class="workspace">
+      <section id="lock-card" class="card" aria-labelledby="lock-title" hidden>
+        <div class="card-top"><span class="step-number">00</span><p class="eyebrow">ACCESO</p></div>
+        <h2 id="lock-title">Escribe la contraseña</h2>
+        <p class="muted">El diccionario está cifrado. Con la contraseña correcta se guarda en este dispositivo y no te la volverá a pedir.</p>
+        <form id="lock-form">
+          <label for="lock-password">Contraseña</label>
+          <div class="lookup-row"><input id="lock-password" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" required><button id="lock-button" type="submit" class="button button-primary">Entrar</button></div>
+          <p id="lock-feedback" class="feedback" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <section id="main-cards" class="main-cards" hidden>
+      <section class="card test-card" aria-labelledby="test-title">
+        <div class="card-top"><span class="step-number">01</span><p class="eyebrow">PRUEBA EL DICCIONARIO</p></div>
+        <h2 id="test-title">Haz una consulta aquí</h2>
+        <p class="muted">Esta prueba lee el diccionario y no envía mensajes.</p>
+        <form id="lookup-form">
+          <label for="lookup-key">Key exacta</label>
+          <div class="lookup-row"><input id="lookup-key" name="key" type="text" value="150.000" autocomplete="off" spellcheck="false" required><button id="lookup-button" type="submit" class="button button-primary">Consultar</button></div>
+          <p class="field-help">Escribe la clave; se ignoran mayúsculas y espacios al principio y al final.</p>
+        </form>
+        <p id="lookup-feedback" class="feedback" role="status" aria-live="polite">Escribe una key para ver su valor.</p>
+        <div id="lookup-result" class="result" hidden><div class="result-heading"><span>QR GENERADO</span><code id="result-key"></code></div><img id="result-image" alt="Plantilla con el QR del valor consultado"><div class="result-actions"><button id="share-button" type="button" class="button button-primary">Compartir imagen</button><p id="share-feedback" class="feedback" role="status" aria-live="polite"></p></div></div>
+      </section>
+
+      <section class="card settings-card" aria-labelledby="settings-title">
+        <div class="card-top"><span class="step-number">02</span><p class="eyebrow">TU DICCIONARIO</p></div>
+        <h2 id="settings-title">Tu archivo</h2>
+        <p class="muted">Puedes cargar un JSON desde tu teléfono. Se guarda solo en este dispositivo y funciona sin internet.</p>
+        <div class="dictionary-info"><span class="file-icon" aria-hidden="true">{ }</span><div><strong id="dictionary-count">Leyendo diccionario…</strong><span id="dictionary-detail">Diccionario publicado en GitHub</span></div></div>
+        <form id="upload-form">
+          <label for="dictionary-file">Actualizar diccionario</label>
+          <input id="dictionary-file" type="file" accept=".json,application/json" required>
+          <div class="connection-actions upload-actions">
+            <button id="upload-button" type="submit" class="button button-secondary">Cargar JSON</button>
+            <button id="reset-button" type="button" class="button button-quiet" hidden>Usar diccionario publicado</button>
+          </div>
+          <p id="upload-feedback" class="feedback" role="status" aria-live="polite"></p>
+        </form>
+        <button id="lock-now-button" type="button" class="button button-quiet lock-now">Bloquear y borrar datos del dispositivo</button>
+      </section>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

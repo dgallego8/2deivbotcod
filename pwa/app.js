@@ -1,0 +1,399 @@
+'use strict';
+
+// Versión estática del "Haz una consulta aquí" del panel (botcod-main/public/ui.js).
+// Replica en el navegador lo que hacen botcod-main/lib/dictionary.js (búsqueda y validación)
+// y botcod-main/lib/qr-card.js (plantilla + QR) en el servidor.
+(() => {
+  const byId = (id) => document.getElementById(id);
+  const ENCRYPTED_URL = 'data/payloads.enc.json';
+  // Plantilla redibujada en alta resolución (el doble de botcod-main/assets/plantilla-original.jpeg).
+  const TEMPLATE_URL = 'assets/plantilla-hd.png';
+  const SCALE = 2;
+  const AREA = { left: 184, top: 450, width: 526, height: 526 };
+  const MAX_FILE_BYTES = 10 * 1024 * 1024;
+  const MAX_VALUE_LENGTH = 3500;
+  const RESPONSE_PREFIX = '🤖 ';
+  const pending = new Set();
+  let dictionaryPromise = null;
+  let templatePromise = null;
+  let lastResult = null;
+
+  // Igual que normalizeKey() en lib/dictionary.js.
+  const normalizeKey = (key) => key.normalize('NFC').trim().toLowerCase().normalize('NFC');
+  // Igual que renderValue() en lib/dictionary.js.
+  const renderValue = (value) => (typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+
+  function feedback(id, message, tone = '') {
+    const element = byId(id);
+    element.textContent = message;
+    element.dataset.tone = tone;
+  }
+
+  function updateControls() {
+    byId('lookup-button').disabled = pending.has('lookup');
+    byId('lookup-button').textContent = pending.has('lookup') ? 'Buscando…' : 'Consultar';
+    byId('upload-button').disabled = pending.has('upload');
+    byId('upload-button').textContent = pending.has('upload') ? 'Cargando…' : 'Cargar JSON';
+    byId('reset-button').disabled = pending.has('upload');
+    byId('share-button').disabled = pending.has('share');
+    byId('lock-button').disabled = pending.has('unlock');
+    byId('lock-button').textContent = pending.has('unlock') ? 'Abriendo…' : 'Entrar';
+  }
+
+  async function action(name, work, errorFeedback) {
+    if (pending.has(name)) return;
+    pending.add(name);
+    updateControls();
+    try { await work(); }
+    catch (error) { feedback(errorFeedback, error.message || 'No se pudo completar la operación.', 'error'); }
+    finally { pending.delete(name); updateControls(); }
+  }
+
+  // ---------- Diccionario guardado en este dispositivo (IndexedDB) ----------
+  const DB_NAME = 'mi-bot';
+  const STORE = 'dictionary';
+  const LOCAL_ID = 'local';
+
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, 1);
+      request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function dbRequest(mode, run) {
+    const db = await openDb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, mode);
+        const request = run(tx.objectStore(STORE));
+        tx.oncomplete = () => resolve(request.result);
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('No se pudo usar el almacenamiento del dispositivo.'));
+      });
+    } finally { db.close(); }
+  }
+
+  const PUBLISHED_ID = 'published';
+  const readRecord = (id) => dbRequest('readonly', (store) => store.get(id)).catch(() => undefined);
+  const saveRecord = (id, record) => dbRequest('readwrite', (store) => store.put(record, id));
+  const deleteRecord = (id) => dbRequest('readwrite', (store) => store.delete(id));
+  const readLocal = () => readRecord(LOCAL_ID);
+  const saveLocal = (record) => saveRecord(LOCAL_ID, record);
+  const deleteLocal = () => deleteRecord(LOCAL_ID);
+
+  // ---------- Validación (igual que validateDictionary() en lib/dictionary.js) ----------
+  function assertJsonValue(value) {
+    if (value === null || ['string', 'boolean'].includes(typeof value)) return;
+    if (typeof value === 'number' && Number.isFinite(value)) return;
+    if (typeof value !== 'object') throw new Error('Los valores deben ser texto, números finitos, booleanos o datos JSON.');
+    for (const item of Object.values(value)) assertJsonValue(item);
+  }
+
+  function parseDictionary(source) {
+    let data;
+    try { data = JSON.parse(source.replace(/^﻿/, '')); }
+    catch { throw new Error('El archivo del diccionario no contiene JSON válido.'); }
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('El diccionario debe ser un objeto JSON de claves y valores.');
+    }
+    assertJsonValue(data);
+    const index = new Map();
+    for (const [key, value] of Object.entries(data)) {
+      const normalized = normalizeKey(key);
+      if (!normalized) throw new Error('El diccionario no puede contener claves vacías.');
+      if (key.normalize('NFC').trimStart().startsWith(RESPONSE_PREFIX)) {
+        throw new Error('Las claves no pueden empezar con el prefijo reservado «🤖 ».');
+      }
+      if (index.has(normalized)) throw new Error(`Hay claves repetidas al ignorar mayúsculas y espacios: «${key}».`);
+      const rendered = renderValue(value);
+      if (rendered.length > MAX_VALUE_LENGTH) {
+        throw new Error(`El valor de «${key}» supera el máximo de ${MAX_VALUE_LENGTH} caracteres.`);
+      }
+      index.set(normalized, { key, value: rendered });
+    }
+    return index;
+  }
+
+  // ---------- Diccionario publicado (cifrado con contraseña) ----------
+  const fromBase64 = (text) => Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
+  const locked = () => Object.assign(new Error('Escribe la contraseña para abrir el diccionario.'), { code: 'LOCKED' });
+
+  async function sha256Hex(text) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function fetchEncrypted() {
+    let response;
+    try { response = await fetch(ENCRYPTED_URL); } catch { return null; }
+    if (!response.ok) return null;
+    return response.text();
+  }
+
+  async function decrypt(encryptedText, password) {
+    let file;
+    try { file = JSON.parse(encryptedText); } catch { throw new Error('El archivo cifrado del diccionario no es válido.'); }
+    if (file.v !== 1) throw new Error('El archivo cifrado usa un formato que esta versión no entiende.');
+    const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: fromBase64(file.salt), iterations: file.iterations, hash: 'SHA-256' },
+      material, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    try {
+      const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromBase64(file.iv) }, key, fromBase64(file.data));
+      return new TextDecoder().decode(plain);
+    } catch { throw new Error('Contraseña incorrecta.'); }
+  }
+
+  async function loadPublished() {
+    const cached = await readRecord(PUBLISHED_ID);
+    const encrypted = await fetchEncrypted();
+    if (encrypted === null) {
+      // Sin red y sin copia en el service worker: usa lo ya descifrado en este dispositivo.
+      if (cached?.text) return { index: parseDictionary(cached.text), source: 'published' };
+      throw new Error('No hay un diccionario cifrado disponible. Abre la app con internet o crea el archivo en cifrar.html y súbelo a pwa/data/.');
+    }
+    if (cached?.text && cached.hash === await sha256Hex(encrypted)) {
+      return { index: parseDictionary(cached.text), source: 'published' };
+    }
+    throw locked();
+  }
+
+  async function unlock(password) {
+    const encrypted = await fetchEncrypted();
+    if (encrypted === null) throw new Error('No se pudo leer el diccionario. Abre la app una vez con internet para guardarlo.');
+    const text = await decrypt(encrypted, password);
+    const index = parseDictionary(text);
+    await saveRecord(PUBLISHED_ID, { text, hash: await sha256Hex(encrypted), savedAt: new Date().toISOString() });
+    if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
+    dictionaryPromise = null;
+    return index;
+  }
+
+  function loadDictionary() {
+    if (!dictionaryPromise) {
+      dictionaryPromise = (async () => {
+        const local = await readLocal();
+        if (local?.text) {
+          try { return { index: parseDictionary(local.text), source: 'local', name: local.name, savedAt: local.savedAt }; }
+          catch { /* Si lo guardado se dañó, usa el publicado. */ }
+        }
+        return loadPublished();
+      })();
+      dictionaryPromise.catch(() => { dictionaryPromise = null; });
+    }
+    return dictionaryPromise;
+  }
+
+  async function showDictionaryInfo() {
+    const info = byId('dictionary-count').closest('.dictionary-info');
+    try {
+      const dictionary = await loadDictionary();
+      byId('dictionary-count').textContent = `${dictionary.index.size.toLocaleString('es-CO')} keys disponibles`;
+      if (dictionary.source === 'local') {
+        const date = new Date(dictionary.savedAt);
+        const when = Number.isNaN(date.getTime()) ? '' : ` · ${date.toLocaleString('es-CO')}`;
+        byId('dictionary-detail').textContent = `Cargado en este dispositivo: ${dictionary.name || 'archivo JSON'}${when}`;
+      } else {
+        byId('dictionary-detail').textContent = 'Diccionario cifrado, abierto en este dispositivo';
+      }
+      byId('reset-button').hidden = dictionary.source !== 'local';
+      info.dataset.error = 'false';
+    } catch (error) {
+      if (error.code === 'LOCKED') return;
+      byId('dictionary-count').textContent = 'No se pudo leer el archivo';
+      byId('dictionary-detail').textContent = error.message;
+      info.dataset.error = 'true';
+    }
+  }
+
+  byId('upload-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    action('upload', async () => {
+      const file = byId('dictionary-file').files[0];
+      if (!file) throw new Error('Selecciona un diccionario JSON.');
+      if (file.size > MAX_FILE_BYTES) throw new Error('El diccionario supera el máximo de 10 MiB.');
+      feedback('upload-feedback', 'Leyendo el archivo…');
+      const text = await file.text();
+      const index = parseDictionary(text);
+      await saveLocal({ text, name: file.name, savedAt: new Date().toISOString() });
+      if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
+      dictionaryPromise = null;
+      byId('dictionary-file').value = '';
+      byId('lookup-result').hidden = true;
+      await start();
+      feedback('upload-feedback', `Diccionario cargado: ${index.size.toLocaleString('es-CO')} keys. Las consultas usarán este archivo.`, 'success');
+    }, 'upload-feedback');
+  });
+
+  byId('reset-button').addEventListener('click', () => action('upload', async () => {
+    await deleteLocal();
+    dictionaryPromise = null;
+    byId('lookup-result').hidden = true;
+    await start();
+    if (!byId('main-cards').hidden) feedback('upload-feedback', 'Se volvió a usar el diccionario publicado.', 'success');
+  }, 'upload-feedback'));
+
+  // ---------- Plantilla + QR ----------
+  function loadTemplate() {
+    if (!templatePromise) {
+      templatePromise = new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('No se pudo cargar la plantilla.'));
+        image.src = TEMPLATE_URL;
+      });
+      templatePromise.catch(() => { templatePromise = null; });
+    }
+    return templatePromise;
+  }
+
+  // Igual que renderQrCard() en lib/qr-card.js, dibujado en un <canvas>.
+  async function renderQrCard(value) {
+    if (typeof value !== 'string' || !value.length) throw new Error('El valor está vacío; no se puede generar el QR.');
+    let symbol;
+    try { symbol = window.QRCodeCore.create([{ data: value, mode: 'byte' }], { errorCorrectionLevel: 'M' }); }
+    catch { throw new Error('El valor no cabe en un código QR.'); }
+    const size = symbol.modules.size;
+    // Mismo límite que el servidor (calculado a 900x1600); luego se dibuja al doble de resolución.
+    if (Math.floor(AREA.width / (size + 8)) < 3) throw new Error('El valor es demasiado largo para el espacio de esta plantilla.');
+    const template = await loadTemplate();
+    if (template.naturalWidth !== 900 * SCALE || template.naturalHeight !== 1600 * SCALE) throw new Error('La plantilla no tiene las dimensiones esperadas.');
+
+    const area = { left: AREA.left * SCALE, top: AREA.top * SCALE, width: AREA.width * SCALE, height: AREA.height * SCALE };
+    const scale = Math.floor(area.width / (size + 8));
+    const canvas = document.createElement('canvas');
+    canvas.width = template.naturalWidth;
+    canvas.height = template.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(template, 0, 0);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(area.left, area.top, area.width, area.height);
+    const qrSize = (size + 8) * scale;
+    const offset = Math.floor((area.width - qrSize) / 2);
+    const originX = area.left + offset + 4 * scale;
+    const originY = area.top + offset + 4 * scale;
+    ctx.fillStyle = '#000000';
+    const data = symbol.modules.data;
+    for (let row = 0; row < size; row++) {
+      for (let col = 0; col < size; col++) {
+        if (data[row * size + col]) ctx.fillRect(originX + col * scale, originY + row * scale, scale, scale);
+      }
+    }
+
+    // Verifica la imagen final, como hace el servidor.
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const decoded = window.jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: 'dontInvert' });
+    if (decoded?.data !== value) throw new Error('No se pudo verificar el contenido del QR generado.');
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((result) => (result ? resolve(result) : reject(new Error('No se pudo crear la imagen.'))), 'image/png');
+    });
+    return blob;
+  }
+
+  byId('lookup-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    action('lookup', async () => {
+      const key = byId('lookup-key').value;
+      byId('lookup-result').hidden = true;
+      if (!key.length) throw new Error('Escribe una key para consultar.');
+      if (!key.trim() || key.length > 200) throw new Error('Escribe una clave de hasta 200 caracteres.');
+      feedback('lookup-feedback', 'Consultando el diccionario…');
+      const { index } = await loadDictionary();
+      const result = index.get(normalizeKey(key));
+      if (!result) {
+        feedback('lookup-feedback', 'No se encontró esa key. Comprueba que coincida exactamente con el archivo.');
+        return;
+      }
+      const blob = await renderQrCard(result.value);
+      const image = byId('result-image');
+      if (image.src.startsWith('blob:')) URL.revokeObjectURL(image.src);
+      image.src = URL.createObjectURL(blob);
+      lastResult = { key: result.key, blob };
+      byId('result-key').textContent = String(result.key ?? key);
+      byId('lookup-result').hidden = false;
+      feedback('share-feedback', '');
+      feedback('lookup-feedback', 'QR verificado. Esta es la imagen que se enviará por WhatsApp.', 'success');
+    }, 'lookup-feedback');
+  });
+
+  // ---------- Compartir imagen ----------
+  byId('share-button').addEventListener('click', () => action('share', async () => {
+    if (!lastResult) return;
+    const safeKey = lastResult.key.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'qr';
+    const file = new File([lastResult.blob], `qr-${safeKey}.png`, { type: 'image/png' });
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); }
+      catch (error) { if (error.name !== 'AbortError') throw new Error('No se pudo compartir la imagen.'); }
+      return;
+    }
+    // Navegadores sin menú de compartir: descarga la imagen.
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(file);
+    link.download = file.name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    feedback('share-feedback', 'Imagen descargada.', 'success');
+  }, 'share-feedback'));
+
+  // ---------- Pantalla de contraseña ----------
+  async function start() {
+    try {
+      await loadDictionary();
+      byId('lock-card').hidden = true;
+      byId('main-cards').hidden = false;
+      await showDictionaryInfo();
+    } catch (error) {
+      if (error.code === 'LOCKED') {
+        byId('main-cards').hidden = true;
+        byId('lock-card').hidden = false;
+        return;
+      }
+      byId('lock-card').hidden = true;
+      byId('main-cards').hidden = false;
+      await showDictionaryInfo();
+    }
+  }
+
+  byId('lock-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    action('unlock', async () => {
+      const password = byId('lock-password').value;
+      if (!password) throw new Error('Escribe la contraseña.');
+      feedback('lock-feedback', 'Abriendo el diccionario…');
+      await unlock(password);
+      byId('lock-password').value = '';
+      feedback('lock-feedback', '');
+      await start();
+    }, 'lock-feedback');
+  });
+
+  byId('lock-now-button').addEventListener('click', () => action('lock', async () => {
+    await Promise.all([deleteRecord(PUBLISHED_ID), deleteLocal()]);
+    dictionaryPromise = null;
+    lastResult = null;
+    byId('lookup-result').hidden = true;
+    feedback('upload-feedback', '');
+    await start();
+  }, 'upload-feedback'));
+
+  // ---------- Estado de conexión y service worker ----------
+  function updateOnlineLabel() {
+    byId('offline-tag').lastChild.textContent = navigator.onLine ? ' Funciona sin internet' : ' Sin internet';
+  }
+  window.addEventListener('online', updateOnlineLabel);
+  window.addEventListener('offline', updateOnlineLabel);
+  updateOnlineLabel();
+  updateControls();
+  start();
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js', { scope: './' }).catch(() => {});
+    });
+  }
+})();

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Cifrar diccionario</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="pwa.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="page-header">
+      <div class="brand"><span class="brand-icon" aria-hidden="true">↗</span><span>MI BOT <span class="brand-divider">/</span> CIFRAR</span></div>
+    </header>
+    <section class="intro">
+      <p class="eyebrow">PUBLICA SIN EXPONER TUS DATOS</p>
+      <h1>Cifra tu<br>diccionario.</h1>
+      <p class="intro-copy">Todo ocurre en tu navegador: el archivo y la contraseña no se envían a ningún sitio. Obtendrás <code>payloads.enc.json</code>, que sí puedes subir a GitHub.</p>
+    </section>
+    <div class="workspace">
+      <section class="card" aria-labelledby="enc-title">
+        <h2 id="enc-title">Archivo y contraseña</h2>
+        <form id="enc-form">
+          <label for="enc-file">Diccionario JSON</label>
+          <input id="enc-file" type="file" accept=".json,application/json" required>
+          <label for="enc-password">Contraseña (mínimo 12 caracteres)</label>
+          <input id="enc-password" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" minlength="12" required>
+          <label for="enc-password2">Repite la contraseña</label>
+          <input id="enc-password2" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" minlength="12" required>
+          <p class="field-help">Guarda la contraseña en un lugar seguro: si la pierdes no hay forma de recuperar el archivo cifrado.</p>
+          <div class="connection-actions upload-actions"><button id="enc-button" type="submit" class="button button-primary">Cifrar y descargar</button></div>
+          <p id="enc-feedback" class="feedback" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+    </div>
+  </main>
+  <script>
+    'use strict';
+    const ITERATIONS = 600000;
+    const byId = (id) => document.getElementById(id);
+    function toBase64(bytes) {
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      return btoa(binary);
+    }
+    function say(message, tone = '') { const el = byId('enc-feedback'); el.textContent = message; el.dataset.tone = tone; }
+    byId('enc-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = byId('enc-button');
+      button.disabled = true;
+      try {
+        const file = byId('enc-file').files[0];
+        const password = byId('enc-password').value;
+        if (!file) throw new Error('Selecciona el diccionario JSON.');
+        if (file.size > 10 * 1024 * 1024) throw new Error('El diccionario supera el máximo de 10 MiB.');
+        if (password.length < 12) throw new Error('Usa una contraseña de al menos 12 caracteres.');
+        if (password !== byId('enc-password2').value) throw new Error('Las contraseñas no coinciden.');
+        say('Cifrando… puede tardar unos segundos.');
+        const plain = await file.arrayBuffer();
+        try { JSON.parse(new TextDecoder().decode(plain).replace(/^﻿/, '')); }
+        catch { throw new Error('El archivo no contiene JSON válido.'); }
+        const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+        const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+        const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: ITERATIONS, hash: 'SHA-256' }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+        const data = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plain));
+        const out = JSON.stringify({ v: 1, kdf: 'PBKDF2-SHA256', iterations: ITERATIONS, salt: toBase64(salt), iv: toBase64(iv), data: toBase64(data) }) + '\n';
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(new Blob([out], { type: 'application/json' }));
+        link.download = 'payloads.enc.json';
+        document.body.append(link); link.click(); link.remove();
+        say('Listo: se descargó payloads.enc.json. Súbelo a GitHub en la carpeta pwa/data/.', 'success');
+      } catch (error) { say(error.message || 'No se pudo cifrar el archivo.', 'error'); }
+      finally { button.disabled = false; }
+    });
+  </script>
+</body>
+</html>

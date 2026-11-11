@@ -1,0 +1,4 @@
+_site/
+# El diccionario sin cifrar nunca debe subirse al repositorio.
+botcod-main/data/payloads_generados.json
+*.zip

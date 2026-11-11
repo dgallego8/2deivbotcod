@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="api-token" content="__API_TOKEN__">
+  <title>Mi bot · WhatsApp en Railway</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/ui.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="page-header">
+      <div class="brand"><span class="brand-icon" aria-hidden="true">↗</span><span>MI BOT <span class="brand-divider">/</span> RAILWAY</span></div>
+      <span class="local-tag"><span aria-hidden="true"></span> En Railway</span>
+    </header>
+
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">TU DICCIONARIO, A UN MENSAJE</p>
+      <h1 id="page-title">Escribe una key.<br>Recibe su QR.</h1>
+      <p class="intro-copy">Consulta tu diccionario escribiendo desde tu WhatsApp Business a tu WhatsApp personal.</p>
+    </section>
+
+    <div class="workspace">
+      <section class="card connection-card" aria-labelledby="connection-title">
+        <div class="card-top"><span class="step-number">01</span><p class="eyebrow">CONECTA TU CUENTA</p></div>
+        <div class="section-heading"><h2 id="connection-title">WhatsApp personal</h2><span id="status-badge" class="status-badge" data-state="starting"><span aria-hidden="true"></span><span id="status-label">Cargando</span></span></div>
+        <p id="status-detail" class="muted" aria-live="polite">Consultando el estado del bot…</p>
+
+        <div id="connection-display" class="connection-display">
+          <img id="qr-code" width="250" height="250" alt="Código QR para vincular tu WhatsApp personal" hidden>
+          <div id="qr-placeholder" class="qr-placeholder"><span id="connection-symbol" class="connection-symbol" aria-hidden="true">↗</span><strong id="connection-message">Un momento…</strong><p id="connection-hint">Estamos consultando la conexión.</p></div>
+        </div>
+
+        <ol class="instructions">
+          <li><span>1</span><div>Abre <strong>WhatsApp personal</strong> en tu teléfono.</div></li>
+          <li><span>2</span><div>Entra a <strong>Dispositivos vinculados → Vincular dispositivo</strong> y escanea el QR.</div></li>
+          <li><span>3</span><div>Desde tu <strong>WhatsApp Business</strong>, envía <code>150.000</code> al número personal.</div></li>
+        </ol>
+
+        <div class="connection-actions">
+          <button id="connect-button" type="button" class="button button-primary">Conectar WhatsApp</button>
+          <button id="toggle-button" type="button" class="button button-secondary" disabled>Pausar respuestas</button>
+        </div>
+        <p id="connection-feedback" class="feedback" role="status" aria-live="polite"></p>
+        <div class="session-info"><div><span>Cuenta conectada</span><strong id="account-label">—</strong></div><div><span>Respuestas enviadas</span><strong id="replies-label">0</strong></div></div>
+        <p id="last-reply" class="small muted">Sin respuestas enviadas en esta sesión.</p>
+        <p id="last-error" class="error-box" hidden></p>
+      </section>
+
+      <div class="right-column">
+        <section class="card settings-card" aria-labelledby="settings-title">
+          <div class="card-top"><span class="step-number">02</span><p class="eyebrow">CONFIGURA EL ACCESO</p></div>
+          <h2 id="settings-title">Tu número y tu archivo</h2>
+          <p class="muted">Solo este número de Business podrá consultar el diccionario.</p>
+          <form id="settings-form">
+            <label for="personal-number">WhatsApp Business</label>
+            <input id="personal-number" name="personalNumber" type="tel" autocomplete="tel" placeholder="Número de Business con código de país" required aria-describedby="number-help">
+            <p id="number-help" class="field-help">Incluye el código de país, por ejemplo +57.</p>
+            <label for="dictionary-path">Ruta del diccionario JSON</label>
+            <input readonly id="dictionary-path" name="dictionaryPath" type="text" spellcheck="false" autocomplete="off" placeholder="C:\carpeta\payloads_generados.json" required aria-describedby="path-help">
+            <p id="path-help" class="field-help">El archivo se guarda en el volumen de Railway. Actualízalo usando el botón de abajo.</p>
+            <div class="dictionary-info"><span class="file-icon" aria-hidden="true">{ }</span><div><strong id="dictionary-count">Leyendo diccionario…</strong><span id="dictionary-detail">Diccionario guardado en Railway</span></div></div>
+            <button id="save-button" type="submit" class="button button-secondary">Guardar configuración</button>
+            <p id="settings-feedback" class="feedback" role="status" aria-live="polite"></p>
+          </form>
+          <form id="upload-form">
+            <label for="dictionary-file">Actualizar diccionario</label>
+            <input id="dictionary-file" type="file" accept=".json,application/json" required>
+            <button id="upload-button" type="submit" class="button button-secondary">Subir JSON</button>
+            <p id="upload-feedback" class="feedback" role="status"></p>
+          </form>
+        </section>
+
+        <section class="card test-card" aria-labelledby="test-title">
+          <div class="card-top"><span class="step-number">03</span><p class="eyebrow">PRUEBA EL DICCIONARIO</p></div>
+          <h2 id="test-title">Haz una consulta aquí</h2>
+          <p class="muted">Esta prueba lee el diccionario y no envía mensajes.</p>
+          <form id="lookup-form">
+            <label for="lookup-key">Key exacta</label>
+            <div class="lookup-row"><input id="lookup-key" name="key" type="text" value="150.000" autocomplete="off" spellcheck="false" required><button id="lookup-button" type="submit" class="button button-primary">Consultar</button></div>
+            <p class="field-help">Escribe la clave; se ignoran mayúsculas y espacios al principio y al final.</p>
+          </form>
+          <p id="lookup-feedback" class="feedback" role="status" aria-live="polite">Escribe una key para ver su valor.</p>
+          <div id="lookup-result" class="result" hidden><div class="result-heading"><span>QR GENERADO</span><code id="result-key"></code></div><img id="result-image" alt="Plantilla con el QR del valor consultado"></div>
+        </section>
+      </div>
+    </div>
+
+    <footer class="page-footer">
+      <div><p><strong>El bot responde mientras el servicio de Railway esté activo.</strong></p><p>Conexión no oficial mediante <a href="https://github.com/wwebjs/whatsapp-web.js" target="_blank" rel="noopener noreferrer">whatsapp-web.js</a>. WhatsApp puede restringir la cuenta por su uso.</p></div>
+      <button id="shutdown-button" type="button" hidden disabled>Apagar bot</button>
+    </footer>
+    <p id="shutdown-feedback" class="feedback" role="status" aria-live="polite"></p>
+  </main>
+</body>
+</html>
