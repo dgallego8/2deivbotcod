@@ -8,7 +8,7 @@ const PRECACHE = [
   'index.html',
   'style.css',
   'pwa.css',
-  'cifrar.html',
+  'contrasena.html',
   'app.js',
   'manifest.json',
   'vendor/qrcode.min.js',
@@ -25,8 +25,8 @@ self.addEventListener('install', (event) => {
     const cache = await caches.open(CACHE);
     // cache: 'reload' evita guardar copias viejas de la caché HTTP del navegador.
     await cache.addAll(PRECACHE.map((url) => new Request(url, { cache: 'reload' })));
-    // El diccionario cifrado es opcional: si aún no existe (404) no se bloquea la instalación.
-    await cache.add(new Request('data/payloads.enc.json', { cache: 'reload' })).catch(() => {});
+    // Estos archivos los sube el dueño; si aún no existen (404) no se bloquea la instalación.
+    await Promise.all(['data/payloads_generados.json', 'data/acceso.json'].map((url) => cache.add(new Request(url, { cache: 'reload' })).catch(() => {})));
     await self.skipWaiting();
   })());
 });
