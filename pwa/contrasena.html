@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Crear contraseña</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="pwa.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="page-header">
+      <div class="brand"><span class="brand-icon" aria-hidden="true">↗</span><span>MI BOT <span class="brand-divider">/</span> CONTRASEÑA</span></div>
+    </header>
+    <section class="intro">
+      <p class="eyebrow">ACCESO A LA APP</p>
+      <h1>Crea tu<br>contraseña.</h1>
+      <p class="intro-copy">Se genera en tu navegador. Obtendrás <code>acceso.json</code>, que solo contiene una huella de la contraseña (no la contraseña). Súbelo a GitHub en <code>pwa/data/</code>.</p>
+    </section>
+    <div class="workspace">
+      <section class="card" aria-labelledby="pw-title">
+        <h2 id="pw-title">Nueva contraseña</h2>
+        <form id="pw-form">
+          <label for="pw-password">Contraseña (mínimo 12 caracteres)</label>
+          <input id="pw-password" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" minlength="12" required>
+          <label for="pw-password2">Repite la contraseña</label>
+          <input id="pw-password2" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" minlength="12" required>
+          <p class="field-help">Si la pierdes, crea otra aquí y vuelve a subir <code>acceso.json</code>.</p>
+          <div class="connection-actions upload-actions"><button id="pw-button" type="submit" class="button button-primary">Crear y descargar</button></div>
+          <p id="pw-feedback" class="feedback" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+    </div>
+  </main>
+  <script>
+    'use strict';
+    const ITERATIONS = 600000;
+    const byId = (id) => document.getElementById(id);
+    const toBase64 = (bytes) => btoa(String.fromCharCode(...bytes));
+    function say(message, tone = '') { const el = byId('pw-feedback'); el.textContent = message; el.dataset.tone = tone; }
+    byId('pw-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = byId('pw-button');
+      button.disabled = true;
+      try {
+        const password = byId('pw-password').value;
+        if (password.length < 12) throw new Error('Usa una contraseña de al menos 12 caracteres.');
+        if (password !== byId('pw-password2').value) throw new Error('Las contraseñas no coinciden.');
+        say('Creando…');
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+        const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: ITERATIONS, hash: 'SHA-256' }, material, 256);
+        const out = JSON.stringify({ v: 1, kdf: 'PBKDF2-SHA256', iterations: ITERATIONS, salt: toBase64(salt), hash: toBase64(new Uint8Array(bits)) }) + '\n';
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(new Blob([out], { type: 'application/json' }));
+        link.download = 'acceso.json';
+        document.body.append(link); link.click(); link.remove();
+        say('Listo: se descargó acceso.json. Súbelo a GitHub en pwa/data/.', 'success');
+      } catch (error) { say(error.message || 'No se pudo crear la contraseña.', 'error'); }
+      finally { button.disabled = false; }
+    });
+  </script>
+</body>
+</html>

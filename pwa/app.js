@@ -5,7 +5,8 @@
 // y botcod-main/lib/qr-card.js (plantilla + QR) en el servidor.
 (() => {
   const byId = (id) => document.getElementById(id);
-  const ENCRYPTED_URL = 'data/payloads.enc.json';
+  const DICTIONARY_URL = 'data/payloads_generados.json';
+  const ACCESS_URL = 'data/acceso.json';
   // Plantilla redibujada en alta resolución (el doble de botcod-main/assets/plantilla-original.jpeg).
   const TEMPLATE_URL = 'assets/plantilla-hd.png';
   const SCALE = 2;
@@ -75,7 +76,7 @@
     } finally { db.close(); }
   }
 
-  const PUBLISHED_ID = 'published';
+  const ACCESS_ID = 'access';
   const readRecord = (id) => dbRequest('readonly', (store) => store.get(id)).catch(() => undefined);
   const saveRecord = (id, record) => dbRequest('readwrite', (store) => store.put(record, id));
   const deleteRecord = (id) => dbRequest('readwrite', (store) => store.delete(id));
@@ -116,59 +117,49 @@
     return index;
   }
 
-  // ---------- Diccionario publicado (cifrado con contraseña) ----------
+  // ---------- Contraseña de acceso (en el sitio solo se publica su hash) ----------
   const fromBase64 = (text) => Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
-  const locked = () => Object.assign(new Error('Escribe la contraseña para abrir el diccionario.'), { code: 'LOCKED' });
+  const toBase64 = (bytes) => btoa(String.fromCharCode(...bytes));
 
-  async function sha256Hex(text) {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-  }
-
-  async function fetchEncrypted() {
-    let response;
-    try { response = await fetch(ENCRYPTED_URL); } catch { return null; }
-    if (!response.ok) return null;
-    return response.text();
-  }
-
-  async function decrypt(encryptedText, password) {
-    let file;
-    try { file = JSON.parse(encryptedText); } catch { throw new Error('El archivo cifrado del diccionario no es válido.'); }
-    if (file.v !== 1) throw new Error('El archivo cifrado usa un formato que esta versión no entiende.');
-    const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
-    const key = await crypto.subtle.deriveKey(
-      { name: 'PBKDF2', salt: fromBase64(file.salt), iterations: file.iterations, hash: 'SHA-256' },
-      material, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  async function fetchAccess() {
     try {
-      const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromBase64(file.iv) }, key, fromBase64(file.data));
-      return new TextDecoder().decode(plain);
-    } catch { throw new Error('Contraseña incorrecta.'); }
+      const response = await fetch(ACCESS_URL);
+      if (!response.ok) return null;
+      const file = await response.json();
+      return file.v === 1 && file.salt && file.hash && file.iterations ? file : null;
+    } catch { return null; }
   }
 
-  async function loadPublished() {
-    const cached = await readRecord(PUBLISHED_ID);
-    const encrypted = await fetchEncrypted();
-    if (encrypted === null) {
-      // Sin red y sin copia en el service worker: usa lo ya descifrado en este dispositivo.
-      if (cached?.text) return { index: parseDictionary(cached.text), source: 'published' };
-      throw new Error('No hay un diccionario cifrado disponible. Abre la app con internet o crea el archivo en cifrar.html y súbelo a pwa/data/.');
-    }
-    if (cached?.text && cached.hash === await sha256Hex(encrypted)) {
-      return { index: parseDictionary(cached.text), source: 'published' };
-    }
-    throw locked();
+  async function hashPassword(password, access) {
+    const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: fromBase64(access.salt), iterations: access.iterations, hash: 'SHA-256' }, material, 256);
+    return toBase64(new Uint8Array(bits));
+  }
+
+  async function isUnlocked() {
+    const local = await readLocal();
+    if (local?.text) return true;
+    const access = await fetchAccess();
+    const saved = await readRecord(ACCESS_ID);
+    // Sin archivo de contraseña (aún no configurada): la app queda abierta.
+    if (!access) return true;
+    return saved?.hash === access.hash;
   }
 
   async function unlock(password) {
-    const encrypted = await fetchEncrypted();
-    if (encrypted === null) throw new Error('No se pudo leer el diccionario. Abre la app una vez con internet para guardarlo.');
-    const text = await decrypt(encrypted, password);
-    const index = parseDictionary(text);
-    await saveRecord(PUBLISHED_ID, { text, hash: await sha256Hex(encrypted), savedAt: new Date().toISOString() });
+    const access = await fetchAccess();
+    if (!access) throw new Error('No se pudo leer la configuración de la contraseña. Abre la app con internet.');
+    if (await hashPassword(password, access) !== access.hash) throw new Error('Contraseña incorrecta.');
+    await saveRecord(ACCESS_ID, { hash: access.hash, savedAt: new Date().toISOString() });
     if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
-    dictionaryPromise = null;
-    return index;
+  }
+
+  async function loadPublished() {
+    let response;
+    try { response = await fetch(DICTIONARY_URL); }
+    catch { throw new Error('No se pudo leer el diccionario. Abre la app una vez con internet para guardarlo.'); }
+    if (!response.ok) throw new Error('No se encontró el archivo del diccionario.');
+    return { index: parseDictionary(await response.text()), source: 'published' };
   }
 
   function loadDictionary() {
@@ -196,12 +187,11 @@
         const when = Number.isNaN(date.getTime()) ? '' : ` · ${date.toLocaleString('es-CO')}`;
         byId('dictionary-detail').textContent = `Cargado en este dispositivo: ${dictionary.name || 'archivo JSON'}${when}`;
       } else {
-        byId('dictionary-detail').textContent = 'Diccionario cifrado, abierto en este dispositivo';
+        byId('dictionary-detail').textContent = 'Diccionario publicado en GitHub';
       }
       byId('reset-button').hidden = dictionary.source !== 'local';
       info.dataset.error = 'false';
     } catch (error) {
-      if (error.code === 'LOCKED') return;
       byId('dictionary-count').textContent = 'No se pudo leer el archivo';
       byId('dictionary-detail').textContent = error.message;
       info.dataset.error = 'true';
@@ -342,21 +332,10 @@
 
   // ---------- Pantalla de contraseña ----------
   async function start() {
-    try {
-      await loadDictionary();
-      byId('lock-card').hidden = true;
-      byId('main-cards').hidden = false;
-      await showDictionaryInfo();
-    } catch (error) {
-      if (error.code === 'LOCKED') {
-        byId('main-cards').hidden = true;
-        byId('lock-card').hidden = false;
-        return;
-      }
-      byId('lock-card').hidden = true;
-      byId('main-cards').hidden = false;
-      await showDictionaryInfo();
-    }
+    const open = await isUnlocked();
+    byId('lock-card').hidden = open;
+    byId('main-cards').hidden = !open;
+    if (open) await showDictionaryInfo();
   }
 
   byId('lock-form').addEventListener('submit', (event) => {
@@ -373,7 +352,7 @@
   });
 
   byId('lock-now-button').addEventListener('click', () => action('lock', async () => {
-    await Promise.all([deleteRecord(PUBLISHED_ID), deleteLocal()]);
+    await Promise.all([deleteRecord(ACCESS_ID), deleteLocal()]);
     dictionaryPromise = null;
     lastResult = null;
     byId('lookup-result').hidden = true;
