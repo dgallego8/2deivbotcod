@@ -6,7 +6,9 @@
 (() => {
   const byId = (id) => document.getElementById(id);
   const DICTIONARY_URL = 'data/payloads_generados.json';
-  const TEMPLATE_URL = 'assets/plantilla-original.jpeg';
+  // Plantilla redibujada en alta resolución (el doble de botcod-main/assets/plantilla-original.jpeg).
+  const TEMPLATE_URL = 'assets/plantilla-hd.png';
+  const SCALE = 2;
   const AREA = { left: 184, top: 450, width: 526, height: 526 };
   const MAX_FILE_BYTES = 10 * 1024 * 1024;
   const MAX_VALUE_LENGTH = 3500;
@@ -200,23 +202,25 @@
     try { symbol = window.QRCodeCore.create([{ data: value, mode: 'byte' }], { errorCorrectionLevel: 'M' }); }
     catch { throw new Error('El valor no cabe en un código QR.'); }
     const size = symbol.modules.size;
-    const scale = Math.floor(AREA.width / (size + 8));
-    if (scale < 3) throw new Error('El valor es demasiado largo para el espacio de esta plantilla.');
+    // Mismo límite que el servidor (calculado a 900x1600); luego se dibuja al doble de resolución.
+    if (Math.floor(AREA.width / (size + 8)) < 3) throw new Error('El valor es demasiado largo para el espacio de esta plantilla.');
     const template = await loadTemplate();
-    if (template.naturalWidth !== 900 || template.naturalHeight !== 1600) throw new Error('La plantilla no tiene las dimensiones esperadas.');
+    if (template.naturalWidth !== 900 * SCALE || template.naturalHeight !== 1600 * SCALE) throw new Error('La plantilla no tiene las dimensiones esperadas.');
 
+    const area = { left: AREA.left * SCALE, top: AREA.top * SCALE, width: AREA.width * SCALE, height: AREA.height * SCALE };
+    const scale = Math.floor(area.width / (size + 8));
     const canvas = document.createElement('canvas');
-    canvas.width = 900;
-    canvas.height = 1600;
+    canvas.width = template.naturalWidth;
+    canvas.height = template.naturalHeight;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(template, 0, 0);
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(AREA.left, AREA.top, AREA.width, AREA.height);
+    ctx.fillRect(area.left, area.top, area.width, area.height);
     const qrSize = (size + 8) * scale;
-    const offset = Math.floor((AREA.width - qrSize) / 2);
-    const originX = AREA.left + offset + 4 * scale;
-    const originY = AREA.top + offset + 4 * scale;
+    const offset = Math.floor((area.width - qrSize) / 2);
+    const originX = area.left + offset + 4 * scale;
+    const originY = area.top + offset + 4 * scale;
     ctx.fillStyle = '#000000';
     const data = symbol.modules.data;
     for (let row = 0; row < size; row++) {

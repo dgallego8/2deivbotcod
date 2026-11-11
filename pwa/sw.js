@@ -13,7 +13,7 @@ const PRECACHE = [
   'vendor/qrcode.min.js',
   'vendor/jsQR.js',
   'data/payloads_generados.json',
-  'assets/plantilla-original.jpeg',
+  'assets/plantilla-hd.png',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/icon-maskable-512.png',
