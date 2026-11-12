@@ -7,10 +7,10 @@
   const byId = (id) => document.getElementById(id);
   const BASE_URL = 'data/codigo-base.txt';
   const ACCESS_URL = 'data/acceso.json';
-  // Plantilla redibujada en alta resolución (el doble de botcod-main/assets/plantilla-original.jpeg).
+  // Plantilla propia de la app, a 1800x3200 (el doble de las medidas de AREA).
   const TEMPLATE_URL = 'assets/plantilla-hd.png';
   const SCALE = 2;
-  const AREA = { left: 184, top: 450, width: 526, height: 526 };
+  const AREA = { left: 187, top: 450, width: 526, height: 526 };
   const MIN_AMOUNT = 50000;
   const MAX_AMOUNT = 3000000;
   const pending = new Set();
