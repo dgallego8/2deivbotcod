@@ -26,7 +26,7 @@ self.addEventListener('install', (event) => {
     // cache: 'reload' evita guardar copias viejas de la caché HTTP del navegador.
     await cache.addAll(PRECACHE.map((url) => new Request(url, { cache: 'reload' })));
     // Estos archivos los sube el dueño; si aún no existen (404) no se bloquea la instalación.
-    await Promise.all(['data/payloads_generados.json', 'data/acceso.json'].map((url) => cache.add(new Request(url, { cache: 'reload' })).catch(() => {})));
+    await Promise.all(['data/codigo-base.txt', 'data/acceso.json'].map((url) => cache.add(new Request(url, { cache: 'reload' })).catch(() => {})));
     await self.skipWaiting();
   })());
 });

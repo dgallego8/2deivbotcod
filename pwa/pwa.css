@@ -19,3 +19,4 @@
 @media(pointer:coarse){input{font-size:16px}}
 /* App instalada: deja libre la barra de estado y el borde inferior. */
 @media(display-mode:standalone){.shell{padding-top:max(24px,env(safe-area-inset-top));padding-bottom:max(25px,env(safe-area-inset-bottom))}}
+.settings-card .file-icon{font-family:inherit;font-size:.62rem;letter-spacing:.04em}

@@ -1,7 +1,7 @@
 {
-  "name": "Mi bot · Diccionario",
+  "name": "Mi bot · QR",
   "short_name": "Mi bot",
-  "description": "Escribe una key y recibe su QR, también sin internet.",
+  "description": "Escribe un monto y recibe su QR de pago, también sin internet.",
   "lang": "es",
   "start_url": "./",
   "scope": "./",
