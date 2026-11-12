@@ -283,6 +283,88 @@
     return blob;
   }
 
+  // ---------- Búsqueda flexible de montos ----------
+  // Si la key exacta no existe, compara solo los dígitos: "150000", "$150,000" o "150 mil"
+  // encuentran "150.000"; y un número corto como "150" se prueba también en miles.
+  const digitIndexes = new WeakMap();
+  const onlyDigits = (text) => text.replace(/\D/g, '');
+
+  function digitIndex(index) {
+    if (!digitIndexes.has(index)) {
+      const map = new Map();
+      const repeated = new Set();
+      for (const entry of index.values()) {
+        const digits = onlyDigits(entry.key);
+        if (!digits) continue;
+        if (map.has(digits)) repeated.add(digits);
+        map.set(digits, entry);
+      }
+      for (const digits of repeated) map.delete(digits);
+      digitIndexes.set(index, map);
+    }
+    return digitIndexes.get(index);
+  }
+
+  function findEntry(index, key) {
+    const exact = index.get(normalizeKey(key));
+    if (exact) return exact;
+    const digits = onlyDigits(key).replace(/^0+/, '');
+    if (!digits) return undefined;
+    const map = digitIndex(index);
+    return map.get(digits) || map.get(`${digits}000`);
+  }
+
+  function nearestKeys(index, key) {
+    const digits = onlyDigits(key);
+    if (!digits || digits.length > 15) return [];
+    const target = Number(digits);
+    const options = [];
+    for (const [entryDigits, entry] of digitIndex(index)) {
+      const value = Number(entryDigits);
+      options.push({ key: entry.key, distance: Math.min(Math.abs(value - target), Math.abs(value - target * 1000)) });
+    }
+    return options.sort((a, b) => a.distance - b.distance).slice(0, 3).map((option) => option.key);
+  }
+
+  function showSuggestions(keys) {
+    const box = byId('lookup-suggestions');
+    box.replaceChildren(...keys.map((key) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'button button-secondary';
+      button.textContent = key;
+      button.addEventListener('click', () => {
+        byId('lookup-key').value = key;
+        byId('lookup-form').requestSubmit();
+      });
+      return button;
+    }));
+    box.hidden = !keys.length;
+  }
+
+  // Teclado numérico cuando todas las keys son montos.
+  async function updateKeyboard() {
+    try {
+      const { index } = await loadDictionary();
+      let numeric = index.size > 0;
+      for (const entry of index.values()) if (!/^[\d.,\s$]+$/.test(entry.key)) { numeric = false; break; }
+      byId('lookup-key').inputMode = numeric ? 'numeric' : 'text';
+    } catch { byId('lookup-key').inputMode = 'text'; }
+  }
+
+  byId('lookup-key').addEventListener('focus', (event) => event.target.select());
+
+  // ---------- Mantener la pantalla encendida mientras se muestra el QR ----------
+  let wakeLock = null;
+  async function keepAwake() {
+    if (!('wakeLock' in navigator) || wakeLock || byId('lookup-result').hidden) return;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } catch { wakeLock = null; }
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
+
   byId('lookup-form').addEventListener('submit', (event) => {
     event.preventDefault();
     action('lookup', async () => {
@@ -292,11 +374,15 @@
       if (!key.trim() || key.length > 200) throw new Error('Escribe una clave de hasta 200 caracteres.');
       feedback('lookup-feedback', 'Consultando el diccionario…');
       const { index } = await loadDictionary();
-      const result = index.get(normalizeKey(key));
+      showSuggestions([]);
+      const result = findEntry(index, key);
       if (!result) {
-        feedback('lookup-feedback', 'No se encontró esa key. Comprueba que coincida exactamente con el archivo.');
+        const near = nearestKeys(index, key);
+        showSuggestions(near);
+        feedback('lookup-feedback', near.length ? 'No se encontró esa key. Las más cercanas son:' : 'No se encontró esa key. Comprueba que coincida exactamente con el archivo.');
         return;
       }
+      byId('lookup-key').value = result.key;
       const blob = await renderQrCard(result.value);
       const image = byId('result-image');
       if (image.src.startsWith('blob:')) URL.revokeObjectURL(image.src);
@@ -304,6 +390,9 @@
       lastResult = { key: result.key, blob };
       byId('result-key').textContent = String(result.key ?? key);
       byId('lookup-result').hidden = false;
+      byId('lookup-key').blur();
+      keepAwake();
+      requestAnimationFrame(() => byId('lookup-result').scrollIntoView({ behavior: 'smooth', block: 'start' }));
       feedback('share-feedback', '');
       feedback('lookup-feedback', 'QR verificado. Esta es la imagen que se enviará por WhatsApp.', 'success');
     }, 'lookup-feedback');
@@ -335,7 +424,17 @@
     const open = await isUnlocked();
     byId('lock-card').hidden = open;
     byId('main-cards').hidden = !open;
-    if (open) await showDictionaryInfo();
+    if (open) { await showDictionaryInfo(); await updateKeyboard(); }
+  }
+
+  const ATTEMPTS_KEY = 'mi-bot-intentos';
+  function attempts() {
+    try { return { count: 0, until: 0, ...JSON.parse(localStorage.getItem(ATTEMPTS_KEY)) }; }
+    catch { return { count: 0, until: 0 }; }
+  }
+  function saveAttempts(value) {
+    try { value ? localStorage.setItem(ATTEMPTS_KEY, JSON.stringify(value)) : localStorage.removeItem(ATTEMPTS_KEY); }
+    catch { /* Sin almacenamiento: no se limita. */ }
   }
 
   byId('lock-form').addEventListener('submit', (event) => {
@@ -343,8 +442,20 @@
     action('unlock', async () => {
       const password = byId('lock-password').value;
       if (!password) throw new Error('Escribe la contraseña.');
+      const wait = Math.ceil((attempts().until - Date.now()) / 1000);
+      if (wait > 0) throw new Error(`Demasiados intentos. Espera ${wait} s y vuelve a probar.`);
       feedback('lock-feedback', 'Abriendo el diccionario…');
-      await unlock(password);
+      try { await unlock(password); }
+      catch (error) {
+        if (error.message === 'Contraseña incorrecta.') {
+          const count = attempts().count + 1;
+          // Desde el tercer fallo: 5 s, 10 s, 20 s… hasta 5 minutos.
+          const delay = count >= 3 ? Math.min(5000 * 2 ** (count - 3), 300000) : 0;
+          saveAttempts({ count, until: Date.now() + delay });
+        }
+        throw error;
+      }
+      saveAttempts(null);
       byId('lock-password').value = '';
       feedback('lock-feedback', '');
       await start();

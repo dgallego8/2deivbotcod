@@ -11,3 +11,11 @@
 .main-cards{display:grid;gap:22px}
 .main-cards[hidden],#lock-card[hidden]{display:none}
 .lock-now{margin-top:18px}
+.suggestions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.suggestions[hidden]{display:none}
+.suggestions .button{font-family:Consolas,"Courier New",monospace}
+#lookup-result{scroll-margin-top:12px}
+/* iOS amplía la página al enfocar campos con letra menor de 16px. */
+@media(pointer:coarse){input{font-size:16px}}
+/* App instalada: deja libre la barra de estado y el borde inferior. */
+@media(display-mode:standalone){.shell{padding-top:max(24px,env(safe-area-inset-top));padding-bottom:max(25px,env(safe-area-inset-bottom))}}
