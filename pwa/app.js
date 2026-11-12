@@ -314,6 +314,79 @@
     return map.get(digits) || map.get(`${digits}000`);
   }
 
+  // ---------- QR para cualquier monto ----------
+  // Los valores del diccionario son códigos EMV: campos "id + longitud + valor", con el monto
+  // en el campo 54 y un CRC16 al final (campo 63). Cambiando el monto y recalculando el CRC
+  // se obtiene el código de cualquier valor, igual a los que ya trae el diccionario.
+  const MIN_AMOUNT = 50000;
+  const MAX_AMOUNT = 3000000;
+  const amountBases = new WeakMap();
+  const formatAmount = (amount) => String(amount).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+  function crc16(text) {
+    let crc = 0xFFFF;
+    for (const byte of new TextEncoder().encode(text)) {
+      crc ^= byte << 8;
+      for (let bit = 0; bit < 8; bit++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+    }
+    return crc.toString(16).toUpperCase().padStart(4, '0');
+  }
+
+  function parseEmv(payload) {
+    const fields = [];
+    let position = 0;
+    while (position < payload.length) {
+      const id = payload.slice(position, position + 2);
+      const length = Number(payload.slice(position + 2, position + 4));
+      if (!/^\d{2}$/.test(id) || !Number.isInteger(length) || position + 4 + length > payload.length) return null;
+      fields.push({ id, value: payload.slice(position + 4, position + 4 + length) });
+      position += 4 + length;
+    }
+    const last = fields[fields.length - 1];
+    if (!last || last.id !== '63' || last.value.length !== 4 || crc16(payload.slice(0, -4)) !== last.value) return null;
+    return fields;
+  }
+
+  function buildEmv(fields, amount) {
+    const body = fields.slice(0, -1).map((field) => {
+      const value = field.id === '54' ? String(amount) : field.value;
+      return field.id + String(value.length).padStart(2, '0') + value;
+    }).join('') + '6304';
+    return body + crc16(body);
+  }
+
+  // Solo se activa si el diccionario es de montos y la fórmula reproduce exactamente sus propios códigos.
+  function amountBase(index) {
+    if (!amountBases.has(index)) {
+      let base = null;
+      const entries = [...index.values()].filter((entry) => /^\d[\d.]*$/.test(entry.key));
+      const first = entries[0] && parseEmv(entries[0].value);
+      if (first && first.some((field) => field.id === '54' && field.value === onlyDigits(entries[0].key))) {
+        const step = Math.max(1, Math.floor(entries.length / 25));
+        const sample = entries.filter((_, position) => position % step === 0).concat(entries[entries.length - 1]);
+        if (sample.every((entry) => buildEmv(first, Number(onlyDigits(entry.key))) === entry.value)) base = first;
+      }
+      amountBases.set(index, base);
+    }
+    return amountBases.get(index);
+  }
+
+  function amountFrom(key) {
+    if (!/^[\s$]*\d[\d.,\s]*(mil|k)?\s*$/i.test(key)) return null;
+    const digits = onlyDigits(key).replace(/^0+/, '');
+    if (!digits || digits.length > 9) return null;
+    const amount = Number(digits);
+    return amount < MIN_AMOUNT && amount * 1000 <= MAX_AMOUNT ? amount * 1000 : amount;
+  }
+
+  function generateEntry(index, key) {
+    const amount = amountFrom(key);
+    if (amount === null || amount < MIN_AMOUNT || amount > MAX_AMOUNT) return undefined;
+    const base = amountBase(index);
+    if (!base) return undefined;
+    return { key: formatAmount(amount), value: buildEmv(base, amount), generated: true };
+  }
+
   function nearestKeys(index, key) {
     const digits = onlyDigits(key);
     if (!digits || digits.length > 15) return [];
@@ -375,11 +448,13 @@
       feedback('lookup-feedback', 'Consultando el diccionario…');
       const { index } = await loadDictionary();
       showSuggestions([]);
-      const result = findEntry(index, key);
+      const result = findEntry(index, key) || generateEntry(index, key);
       if (!result) {
         const near = nearestKeys(index, key);
         showSuggestions(near);
-        feedback('lookup-feedback', near.length ? 'No se encontró esa key. Las más cercanas son:' : 'No se encontró esa key. Comprueba que coincida exactamente con el archivo.');
+        const amount = amountFrom(key);
+        const outOfRange = amount !== null && amountBase(index) && (amount < MIN_AMOUNT || amount > MAX_AMOUNT);
+        feedback('lookup-feedback', outOfRange ? `Solo se generan montos entre $${formatAmount(MIN_AMOUNT)} y $${formatAmount(MAX_AMOUNT)}. Los más cercanos son:` : near.length ? 'No se encontró esa key. Las más cercanas son:' : 'No se encontró esa key. Comprueba que coincida exactamente con el archivo.');
         return;
       }
       byId('lookup-key').value = result.key;
@@ -394,7 +469,9 @@
       keepAwake();
       requestAnimationFrame(() => byId('lookup-result').scrollIntoView({ behavior: 'smooth', block: 'start' }));
       feedback('share-feedback', '');
-      feedback('lookup-feedback', 'QR verificado. Esta es la imagen que se enviará por WhatsApp.', 'success');
+      feedback('lookup-feedback', result.generated
+        ? `QR verificado para $${result.key}. Este monto no está en el diccionario: se generó con el mismo formato.`
+        : 'QR verificado. Esta es la imagen que se enviará por WhatsApp.', 'success');
     }, 'lookup-feedback');
   });
 
