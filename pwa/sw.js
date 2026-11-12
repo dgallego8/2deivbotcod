@@ -14,6 +14,7 @@ const PRECACHE = [
   'vendor/qrcode.min.js',
   'vendor/jsQR.js',
   'assets/plantilla-hd.png',
+  'assets/fonts/montserrat-700.woff2',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/icon-maskable-512.png',

@@ -7,10 +7,13 @@
   const byId = (id) => document.getElementById(id);
   const BASE_URL = 'data/codigo-base.txt';
   const ACCESS_URL = 'data/acceso.json';
-  // Plantilla propia de la app, a 1800x3200 (el doble de las medidas de AREA).
+  // Plantilla propia de la app, a 1800x3200 (el doble de las medidas de AREA y NAME).
   const TEMPLATE_URL = 'assets/plantilla-hd.png';
   const SCALE = 2;
-  const AREA = { left: 187, top: 450, width: 526, height: 526 };
+  const AREA = { left: 187, top: 420, width: 526, height: 526 };
+  // Nombre del comercio, escrito por la app debajo de «PAGAS A».
+  const NAME = { centerX: 450, baseline: 1140, maxWidth: 600, size: 44, minSize: 24, color: '#2a0b52' };
+  const FONT_URL = 'assets/fonts/montserrat-700.woff2';
   const MIN_AMOUNT = 50000;
   const MAX_AMOUNT = 3000000;
   const pending = new Set();
@@ -242,7 +245,36 @@
   }
 
   // Igual que renderQrCard() en botcod-main/lib/qr-card.js, dibujado en un <canvas>.
-  async function renderQrCard(value) {
+  let fontPromise = null;
+  function loadFont() {
+    if (!fontPromise) {
+      fontPromise = (async () => {
+        try {
+          const face = new FontFace('MiBotTitulo', `url(${FONT_URL})`, { weight: '700' });
+          document.fonts.add(await face.load());
+          return 'MiBotTitulo';
+        } catch { return null; }
+      })();
+    }
+    return fontPromise;
+  }
+
+  async function drawMerchant(ctx, merchant) {
+    const family = await loadFont();
+    const stack = `${family ? `"${family}", ` : ''}-apple-system, "Helvetica Neue", Arial, sans-serif`;
+    let size = NAME.size * SCALE;
+    const setFont = () => { ctx.font = `700 ${size}px ${stack}`; };
+    setFont();
+    while (size > NAME.minSize * SCALE && ctx.measureText(merchant).width > NAME.maxWidth * SCALE) { size -= 2; setFont(); }
+    let label = merchant;
+    while (label.length > 4 && ctx.measureText(label).width > NAME.maxWidth * SCALE) label = `${label.slice(0, -2).trimEnd()}…`;
+    ctx.fillStyle = NAME.color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(label, NAME.centerX * SCALE, NAME.baseline * SCALE);
+  }
+
+  async function renderQrCard(value, merchant) {
     let symbol;
     try { symbol = window.QRCodeCore.create([{ data: value, mode: 'byte' }], { errorCorrectionLevel: 'M' }); }
     catch { throw new Error('El valor no cabe en un código QR.'); }
@@ -260,6 +292,7 @@
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(template, 0, 0);
+    await drawMerchant(ctx, merchant);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(area.left, area.top, area.width, area.height);
     const qrSize = (size + 8) * scale;
@@ -310,7 +343,7 @@
       feedback('lookup-feedback', 'Generando el QR…');
       const base = await loadBase();
       const key = formatAmount(amount);
-      const blob = await renderQrCard(buildCode(base.fields, amount));
+      const blob = await renderQrCard(buildCode(base.fields, amount), base.merchant);
       const image = byId('result-image');
       if (image.src.startsWith('blob:')) URL.revokeObjectURL(image.src);
       image.src = URL.createObjectURL(blob);
