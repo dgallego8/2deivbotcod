@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Arma el sitio estático en la carpeta indicada (por defecto _site).
 # Copia el CSS desde botcod-main sin modificarlo. Los datos que sube el dueño
-# van en pwa/data/: payloads_generados.json (diccionario) y acceso.json (hash de la contraseña).
+# van en pwa/data/: codigo-base.txt (código de pago base) y acceso.json (hash de la contraseña).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,7 +10,7 @@ BUILD_ID="${2:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || date +%s)}
 
 rm -rf "$OUT"
 
-for file in payloads_generados.json acceso.json; do
+for file in codigo-base.txt acceso.json; do
   if [ ! -f "$ROOT/pwa/data/$file" ]; then
     echo "AVISO: falta pwa/data/$file (el sitio se publica sin él)." >&2
   fi

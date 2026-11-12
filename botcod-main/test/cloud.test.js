@@ -23,6 +23,7 @@ test('restart preserves uploaded dictionary and paused state in volume', async (
     await fs.mkdir(path.join(root, 'data'));
     await fs.writeFile(path.join(root,'data','payloads_generados.json'), '{"150000":"original"}');
     const cloud = { data:path.join(root,'volume'), port:8080 };
+    process.env.ALLOWED_NUMBER = '573001234567';
     const first = await bootstrap(root, cloud);
     await new Dictionary(first.config.dictionaryPath).save({150000:'actualizado'});
     await fs.writeFile(first.configPath, JSON.stringify({...first.config,enabled:false}));

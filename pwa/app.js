@@ -1,28 +1,22 @@
 'use strict';
 
-// Versión estática del "Haz una consulta aquí" del panel (botcod-main/public/ui.js).
-// Replica en el navegador lo que hacen botcod-main/lib/dictionary.js (búsqueda y validación)
-// y botcod-main/lib/qr-card.js (plantilla + QR) en el servidor.
+// App estática: escribe un monto y genera la tarjeta con su QR de pago.
+// Parte de un único "código base" (pwa/data/codigo-base.txt): un código EMV en el que
+// solo cambian el monto (campo 54) y el CRC16 final (campo 63).
 (() => {
   const byId = (id) => document.getElementById(id);
-  const DICTIONARY_URL = 'data/payloads_generados.json';
+  const BASE_URL = 'data/codigo-base.txt';
   const ACCESS_URL = 'data/acceso.json';
   // Plantilla redibujada en alta resolución (el doble de botcod-main/assets/plantilla-original.jpeg).
   const TEMPLATE_URL = 'assets/plantilla-hd.png';
   const SCALE = 2;
   const AREA = { left: 184, top: 450, width: 526, height: 526 };
-  const MAX_FILE_BYTES = 10 * 1024 * 1024;
-  const MAX_VALUE_LENGTH = 3500;
-  const RESPONSE_PREFIX = '🤖 ';
+  const MIN_AMOUNT = 50000;
+  const MAX_AMOUNT = 3000000;
   const pending = new Set();
-  let dictionaryPromise = null;
+  let basePromise = null;
   let templatePromise = null;
   let lastResult = null;
-
-  // Igual que normalizeKey() en lib/dictionary.js.
-  const normalizeKey = (key) => key.normalize('NFC').trim().toLowerCase().normalize('NFC');
-  // Igual que renderValue() en lib/dictionary.js.
-  const renderValue = (value) => (typeof value === 'string' ? value : JSON.stringify(value, null, 2));
 
   function feedback(id, message, tone = '') {
     const element = byId(id);
@@ -32,10 +26,10 @@
 
   function updateControls() {
     byId('lookup-button').disabled = pending.has('lookup');
-    byId('lookup-button').textContent = pending.has('lookup') ? 'Buscando…' : 'Consultar';
-    byId('upload-button').disabled = pending.has('upload');
-    byId('upload-button').textContent = pending.has('upload') ? 'Cargando…' : 'Cargar JSON';
-    byId('reset-button').disabled = pending.has('upload');
+    byId('lookup-button').textContent = pending.has('lookup') ? 'Generando…' : 'Consultar';
+    byId('base-button').disabled = pending.has('base');
+    byId('base-button').textContent = pending.has('base') ? 'Guardando…' : 'Usar este código';
+    byId('reset-button').disabled = pending.has('base');
     byId('share-button').disabled = pending.has('share');
     byId('lock-button').disabled = pending.has('unlock');
     byId('lock-button').textContent = pending.has('unlock') ? 'Abriendo…' : 'Entrar';
@@ -50,10 +44,11 @@
     finally { pending.delete(name); updateControls(); }
   }
 
-  // ---------- Diccionario guardado en este dispositivo (IndexedDB) ----------
+  // ---------- Datos guardados en este dispositivo (IndexedDB) ----------
   const DB_NAME = 'mi-bot';
   const STORE = 'dictionary';
-  const LOCAL_ID = 'local';
+  const BASE_ID = 'base';
+  const ACCESS_ID = 'access';
 
   function openDb() {
     return new Promise((resolve, reject) => {
@@ -76,154 +71,161 @@
     } finally { db.close(); }
   }
 
-  const ACCESS_ID = 'access';
   const readRecord = (id) => dbRequest('readonly', (store) => store.get(id)).catch(() => undefined);
   const saveRecord = (id, record) => dbRequest('readwrite', (store) => store.put(record, id));
   const deleteRecord = (id) => dbRequest('readwrite', (store) => store.delete(id));
-  const readLocal = () => readRecord(LOCAL_ID);
-  const saveLocal = (record) => saveRecord(LOCAL_ID, record);
-  const deleteLocal = () => deleteRecord(LOCAL_ID);
 
-  // ---------- Validación (igual que validateDictionary() en lib/dictionary.js) ----------
-  function assertJsonValue(value) {
-    if (value === null || ['string', 'boolean'].includes(typeof value)) return;
-    if (typeof value === 'number' && Number.isFinite(value)) return;
-    if (typeof value !== 'object') throw new Error('Los valores deben ser texto, números finitos, booleanos o datos JSON.');
-    for (const item of Object.values(value)) assertJsonValue(item);
-  }
+  // ---------- Código EMV: campos "id + longitud + valor" ----------
+  const onlyDigits = (text) => text.replace(/\D/g, '');
+  const formatAmount = (amount) => String(amount).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 
-  function parseDictionary(source) {
-    let data;
-    try { data = JSON.parse(source.replace(/^﻿/, '')); }
-    catch { throw new Error('El archivo del diccionario no contiene JSON válido.'); }
-    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
-      throw new Error('El diccionario debe ser un objeto JSON de claves y valores.');
+  function crc16(text) {
+    let crc = 0xFFFF;
+    for (const byte of new TextEncoder().encode(text)) {
+      crc ^= byte << 8;
+      for (let bit = 0; bit < 8; bit++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
     }
-    assertJsonValue(data);
-    const index = new Map();
-    for (const [key, value] of Object.entries(data)) {
-      const normalized = normalizeKey(key);
-      if (!normalized) throw new Error('El diccionario no puede contener claves vacías.');
-      if (key.normalize('NFC').trimStart().startsWith(RESPONSE_PREFIX)) {
-        throw new Error('Las claves no pueden empezar con el prefijo reservado «🤖 ».');
+    return crc.toString(16).toUpperCase().padStart(4, '0');
+  }
+
+  // Devuelve los campos del código o lanza un error que explica qué está mal.
+  function parseBase(text) {
+    const payload = String(text).replace(/^﻿/, '').trim();
+    if (!payload) throw new Error('El código base está vacío.');
+    const fields = [];
+    let position = 0;
+    while (position < payload.length) {
+      const id = payload.slice(position, position + 2);
+      const length = Number(payload.slice(position + 2, position + 4));
+      if (!/^\d{2}$/.test(id) || !/^\d{2}$/.test(payload.slice(position + 2, position + 4)) || position + 4 + length > payload.length) {
+        throw new Error('Ese texto no es un código de pago QR válido.');
       }
-      if (index.has(normalized)) throw new Error(`Hay claves repetidas al ignorar mayúsculas y espacios: «${key}».`);
-      const rendered = renderValue(value);
-      if (rendered.length > MAX_VALUE_LENGTH) {
-        throw new Error(`El valor de «${key}» supera el máximo de ${MAX_VALUE_LENGTH} caracteres.`);
-      }
-      index.set(normalized, { key, value: rendered });
+      fields.push({ id, value: payload.slice(position + 4, position + 4 + length) });
+      position += 4 + length;
     }
-    return index;
+    const last = fields[fields.length - 1];
+    if (!last || last.id !== '63' || last.value.length !== 4) throw new Error('El código no termina con su campo de verificación.');
+    if (crc16(payload.slice(0, -4)) !== last.value.toUpperCase()) throw new Error('El código está incompleto o alterado: su verificación no coincide.');
+    if (!fields.some((field) => field.id === '54')) throw new Error('El código no tiene un monto que se pueda cambiar. Usa uno generado con un valor.');
+    return { payload, fields, merchant: fields.find((field) => field.id === '59')?.value || 'Comercio sin nombre' };
   }
 
-  // ---------- Contraseña de acceso (en el sitio solo se publica su hash) ----------
-  const fromBase64 = (text) => Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
-  const toBase64 = (bytes) => btoa(String.fromCharCode(...bytes));
-
-  async function fetchAccess() {
-    try {
-      const response = await fetch(ACCESS_URL);
-      if (!response.ok) return null;
-      const file = await response.json();
-      return file.v === 1 && file.salt && file.hash && file.iterations ? file : null;
-    } catch { return null; }
+  function buildCode(fields, amount) {
+    const body = fields.slice(0, -1).map((field) => {
+      const value = field.id === '54' ? String(amount) : field.value;
+      return field.id + String(value.length).padStart(2, '0') + value;
+    }).join('') + '6304';
+    return body + crc16(body);
   }
 
-  async function hashPassword(password, access) {
-    const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: fromBase64(access.salt), iterations: access.iterations, hash: 'SHA-256' }, material, 256);
-    return toBase64(new Uint8Array(bits));
-  }
-
-  async function isUnlocked() {
-    const local = await readLocal();
-    if (local?.text) return true;
-    const access = await fetchAccess();
-    const saved = await readRecord(ACCESS_ID);
-    // Sin archivo de contraseña (aún no configurada): la app queda abierta.
-    if (!access) return true;
-    return saved?.hash === access.hash;
-  }
-
-  async function unlock(password) {
-    const access = await fetchAccess();
-    if (!access) throw new Error('No se pudo leer la configuración de la contraseña. Abre la app con internet.');
-    if (await hashPassword(password, access) !== access.hash) throw new Error('Contraseña incorrecta.');
-    await saveRecord(ACCESS_ID, { hash: access.hash, savedAt: new Date().toISOString() });
-    if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
-  }
-
-  async function loadPublished() {
-    let response;
-    try { response = await fetch(DICTIONARY_URL); }
-    catch { throw new Error('No se pudo leer el diccionario. Abre la app una vez con internet para guardarlo.'); }
-    if (!response.ok) throw new Error('No se encontró el archivo del diccionario.');
-    return { index: parseDictionary(await response.text()), source: 'published' };
-  }
-
-  function loadDictionary() {
-    if (!dictionaryPromise) {
-      dictionaryPromise = (async () => {
-        const local = await readLocal();
-        if (local?.text) {
-          try { return { index: parseDictionary(local.text), source: 'local', name: local.name, savedAt: local.savedAt }; }
+  function loadBase() {
+    if (!basePromise) {
+      basePromise = (async () => {
+        const local = await readRecord(BASE_ID);
+        if (local?.code) {
+          try { return { ...parseBase(local.code), source: 'local', savedAt: local.savedAt }; }
           catch { /* Si lo guardado se dañó, usa el publicado. */ }
         }
-        return loadPublished();
+        let response;
+        try { response = await fetch(BASE_URL); }
+        catch { throw new Error('No se pudo leer el código base. Abre la app una vez con internet para guardarlo.'); }
+        if (!response.ok) throw new Error('No se encontró el código base publicado (pwa/data/codigo-base.txt).');
+        return { ...parseBase(await response.text()), source: 'published' };
       })();
-      dictionaryPromise.catch(() => { dictionaryPromise = null; });
+      basePromise.catch(() => { basePromise = null; });
     }
-    return dictionaryPromise;
+    return basePromise;
   }
 
-  async function showDictionaryInfo() {
-    const info = byId('dictionary-count').closest('.dictionary-info');
+  async function showBaseInfo() {
+    const info = byId('base-name').closest('.dictionary-info');
     try {
-      const dictionary = await loadDictionary();
-      byId('dictionary-count').textContent = `${dictionary.index.size.toLocaleString('es-CO')} keys disponibles`;
-      if (dictionary.source === 'local') {
-        const date = new Date(dictionary.savedAt);
+      const base = await loadBase();
+      byId('base-name').textContent = base.merchant;
+      if (base.source === 'local') {
+        const date = new Date(base.savedAt);
         const when = Number.isNaN(date.getTime()) ? '' : ` · ${date.toLocaleString('es-CO')}`;
-        byId('dictionary-detail').textContent = `Cargado en este dispositivo: ${dictionary.name || 'archivo JSON'}${when}`;
+        byId('base-detail').textContent = `Código cambiado en este dispositivo${when}`;
       } else {
-        byId('dictionary-detail').textContent = 'Diccionario publicado en GitHub';
+        byId('base-detail').textContent = 'Código base publicado en GitHub';
       }
-      byId('reset-button').hidden = dictionary.source !== 'local';
+      byId('reset-button').hidden = base.source !== 'local';
       info.dataset.error = 'false';
     } catch (error) {
-      byId('dictionary-count').textContent = 'No se pudo leer el archivo';
-      byId('dictionary-detail').textContent = error.message;
+      byId('base-name').textContent = 'No se pudo leer el código base';
+      byId('base-detail').textContent = error.message;
+      byId('reset-button').hidden = true;
       info.dataset.error = 'true';
     }
   }
 
-  byId('upload-form').addEventListener('submit', (event) => {
+  // ---------- Cambiar el código base ----------
+  async function decodeImageFile(file) {
+    const url = URL.createObjectURL(file);
+    try {
+      const image = await new Promise((resolve, reject) => {
+        const element = new Image();
+        element.onload = () => resolve(element);
+        element.onerror = () => reject(new Error('No se pudo abrir esa imagen.'));
+        element.src = url;
+      });
+      // Prueba varios tamaños: las fotos grandes se leen mejor reducidas.
+      for (const side of [1600, 1000, 2400, 700]) {
+        const ratio = Math.min(1, side / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * ratio));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * ratio));
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const found = window.jsQR(pixels.data, pixels.width, pixels.height);
+        if (found?.data) return found.data;
+      }
+      throw new Error('No se encontró un código QR en esa imagen.');
+    } finally { URL.revokeObjectURL(url); }
+  }
+
+  byId('base-image').addEventListener('change', () => action('base', async () => {
+    const file = byId('base-image').files[0];
+    if (!file) return;
+    feedback('base-feedback', 'Leyendo el QR de la imagen…');
+    const code = await decodeImageFile(file);
+    const base = parseBase(code);
+    byId('base-code').value = base.payload;
+    feedback('base-feedback', `QR leído: ${base.merchant}. Pulsa «Usar este código» para guardarlo.`, 'success');
+  }, 'base-feedback').finally(() => { byId('base-image').value = ''; }));
+
+  byId('base-form').addEventListener('submit', (event) => {
     event.preventDefault();
-    action('upload', async () => {
-      const file = byId('dictionary-file').files[0];
-      if (!file) throw new Error('Selecciona un diccionario JSON.');
-      if (file.size > MAX_FILE_BYTES) throw new Error('El diccionario supera el máximo de 10 MiB.');
-      feedback('upload-feedback', 'Leyendo el archivo…');
-      const text = await file.text();
-      const index = parseDictionary(text);
-      await saveLocal({ text, name: file.name, savedAt: new Date().toISOString() });
+    action('base', async () => {
+      const base = parseBase(byId('base-code').value);
+      await saveRecord(BASE_ID, { code: base.payload, savedAt: new Date().toISOString() });
       if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
-      dictionaryPromise = null;
-      byId('dictionary-file').value = '';
+      basePromise = null;
+      byId('base-code').value = '';
       byId('lookup-result').hidden = true;
-      await start();
-      feedback('upload-feedback', `Diccionario cargado: ${index.size.toLocaleString('es-CO')} keys. Las consultas usarán este archivo.`, 'success');
-    }, 'upload-feedback');
+      await showBaseInfo();
+      feedback('base-feedback', `Código guardado en este dispositivo: ${base.merchant}. Los QR nuevos usarán este código.`, 'success');
+    }, 'base-feedback');
   });
 
-  byId('reset-button').addEventListener('click', () => action('upload', async () => {
-    await deleteLocal();
-    dictionaryPromise = null;
+  byId('reset-button').addEventListener('click', () => action('base', async () => {
+    await deleteRecord(BASE_ID);
+    basePromise = null;
     byId('lookup-result').hidden = true;
-    await start();
-    if (!byId('main-cards').hidden) feedback('upload-feedback', 'Se volvió a usar el diccionario publicado.', 'success');
-  }, 'upload-feedback'));
+    await showBaseInfo();
+    feedback('base-feedback', 'Se volvió a usar el código base publicado.', 'success');
+  }, 'base-feedback'));
+
+  // ---------- Monto ----------
+  // Acepta "150000", "150.500", "$ 99,999" o "75 mil". Un número corto se entiende en miles.
+  function amountFrom(text) {
+    if (!/^[\s$]*\d[\d.,\s]*(mil|k)?\s*$/i.test(text)) return null;
+    const digits = onlyDigits(text).replace(/^0+/, '');
+    if (!digits || digits.length > 9) return null;
+    const amount = Number(digits);
+    return amount < MIN_AMOUNT && amount * 1000 <= MAX_AMOUNT ? amount * 1000 : amount;
+  }
 
   // ---------- Plantilla + QR ----------
   function loadTemplate() {
@@ -239,9 +241,8 @@
     return templatePromise;
   }
 
-  // Igual que renderQrCard() en lib/qr-card.js, dibujado en un <canvas>.
+  // Igual que renderQrCard() en botcod-main/lib/qr-card.js, dibujado en un <canvas>.
   async function renderQrCard(value) {
-    if (typeof value !== 'string' || !value.length) throw new Error('El valor está vacío; no se puede generar el QR.');
     let symbol;
     try { symbol = window.QRCodeCore.create([{ data: value, mode: 'byte' }], { errorCorrectionLevel: 'M' }); }
     catch { throw new Error('El valor no cabe en un código QR.'); }
@@ -273,156 +274,13 @@
       }
     }
 
-    // Verifica la imagen final, como hace el servidor.
+    // Verifica la imagen final leyendo el QR ya dibujado.
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const decoded = window.jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: 'dontInvert' });
     if (decoded?.data !== value) throw new Error('No se pudo verificar el contenido del QR generado.');
-    const blob = await new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       canvas.toBlob((result) => (result ? resolve(result) : reject(new Error('No se pudo crear la imagen.'))), 'image/png');
     });
-    return blob;
-  }
-
-  // ---------- Búsqueda flexible de montos ----------
-  // Si la key exacta no existe, compara solo los dígitos: "150000", "$150,000" o "150 mil"
-  // encuentran "150.000"; y un número corto como "150" se prueba también en miles.
-  const digitIndexes = new WeakMap();
-  const onlyDigits = (text) => text.replace(/\D/g, '');
-
-  function digitIndex(index) {
-    if (!digitIndexes.has(index)) {
-      const map = new Map();
-      const repeated = new Set();
-      for (const entry of index.values()) {
-        const digits = onlyDigits(entry.key);
-        if (!digits) continue;
-        if (map.has(digits)) repeated.add(digits);
-        map.set(digits, entry);
-      }
-      for (const digits of repeated) map.delete(digits);
-      digitIndexes.set(index, map);
-    }
-    return digitIndexes.get(index);
-  }
-
-  function findEntry(index, key) {
-    const exact = index.get(normalizeKey(key));
-    if (exact) return exact;
-    const digits = onlyDigits(key).replace(/^0+/, '');
-    if (!digits) return undefined;
-    const map = digitIndex(index);
-    return map.get(digits) || map.get(`${digits}000`);
-  }
-
-  // ---------- QR para cualquier monto ----------
-  // Los valores del diccionario son códigos EMV: campos "id + longitud + valor", con el monto
-  // en el campo 54 y un CRC16 al final (campo 63). Cambiando el monto y recalculando el CRC
-  // se obtiene el código de cualquier valor, igual a los que ya trae el diccionario.
-  const MIN_AMOUNT = 50000;
-  const MAX_AMOUNT = 3000000;
-  const amountBases = new WeakMap();
-  const formatAmount = (amount) => String(amount).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-
-  function crc16(text) {
-    let crc = 0xFFFF;
-    for (const byte of new TextEncoder().encode(text)) {
-      crc ^= byte << 8;
-      for (let bit = 0; bit < 8; bit++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
-    }
-    return crc.toString(16).toUpperCase().padStart(4, '0');
-  }
-
-  function parseEmv(payload) {
-    const fields = [];
-    let position = 0;
-    while (position < payload.length) {
-      const id = payload.slice(position, position + 2);
-      const length = Number(payload.slice(position + 2, position + 4));
-      if (!/^\d{2}$/.test(id) || !Number.isInteger(length) || position + 4 + length > payload.length) return null;
-      fields.push({ id, value: payload.slice(position + 4, position + 4 + length) });
-      position += 4 + length;
-    }
-    const last = fields[fields.length - 1];
-    if (!last || last.id !== '63' || last.value.length !== 4 || crc16(payload.slice(0, -4)) !== last.value) return null;
-    return fields;
-  }
-
-  function buildEmv(fields, amount) {
-    const body = fields.slice(0, -1).map((field) => {
-      const value = field.id === '54' ? String(amount) : field.value;
-      return field.id + String(value.length).padStart(2, '0') + value;
-    }).join('') + '6304';
-    return body + crc16(body);
-  }
-
-  // Solo se activa si el diccionario es de montos y la fórmula reproduce exactamente sus propios códigos.
-  function amountBase(index) {
-    if (!amountBases.has(index)) {
-      let base = null;
-      const entries = [...index.values()].filter((entry) => /^\d[\d.]*$/.test(entry.key));
-      const first = entries[0] && parseEmv(entries[0].value);
-      if (first && first.some((field) => field.id === '54' && field.value === onlyDigits(entries[0].key))) {
-        const step = Math.max(1, Math.floor(entries.length / 25));
-        const sample = entries.filter((_, position) => position % step === 0).concat(entries[entries.length - 1]);
-        if (sample.every((entry) => buildEmv(first, Number(onlyDigits(entry.key))) === entry.value)) base = first;
-      }
-      amountBases.set(index, base);
-    }
-    return amountBases.get(index);
-  }
-
-  function amountFrom(key) {
-    if (!/^[\s$]*\d[\d.,\s]*(mil|k)?\s*$/i.test(key)) return null;
-    const digits = onlyDigits(key).replace(/^0+/, '');
-    if (!digits || digits.length > 9) return null;
-    const amount = Number(digits);
-    return amount < MIN_AMOUNT && amount * 1000 <= MAX_AMOUNT ? amount * 1000 : amount;
-  }
-
-  function generateEntry(index, key) {
-    const amount = amountFrom(key);
-    if (amount === null || amount < MIN_AMOUNT || amount > MAX_AMOUNT) return undefined;
-    const base = amountBase(index);
-    if (!base) return undefined;
-    return { key: formatAmount(amount), value: buildEmv(base, amount), generated: true };
-  }
-
-  function nearestKeys(index, key) {
-    const digits = onlyDigits(key);
-    if (!digits || digits.length > 15) return [];
-    const target = Number(digits);
-    const options = [];
-    for (const [entryDigits, entry] of digitIndex(index)) {
-      const value = Number(entryDigits);
-      options.push({ key: entry.key, distance: Math.min(Math.abs(value - target), Math.abs(value - target * 1000)) });
-    }
-    return options.sort((a, b) => a.distance - b.distance).slice(0, 3).map((option) => option.key);
-  }
-
-  function showSuggestions(keys) {
-    const box = byId('lookup-suggestions');
-    box.replaceChildren(...keys.map((key) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'button button-secondary';
-      button.textContent = key;
-      button.addEventListener('click', () => {
-        byId('lookup-key').value = key;
-        byId('lookup-form').requestSubmit();
-      });
-      return button;
-    }));
-    box.hidden = !keys.length;
-  }
-
-  // Teclado numérico cuando todas las keys son montos.
-  async function updateKeyboard() {
-    try {
-      const { index } = await loadDictionary();
-      let numeric = index.size > 0;
-      for (const entry of index.values()) if (!/^[\d.,\s$]+$/.test(entry.key)) { numeric = false; break; }
-      byId('lookup-key').inputMode = numeric ? 'numeric' : 'text';
-    } catch { byId('lookup-key').inputMode = 'text'; }
   }
 
   byId('lookup-key').addEventListener('focus', (event) => event.target.select());
@@ -441,37 +299,30 @@
   byId('lookup-form').addEventListener('submit', (event) => {
     event.preventDefault();
     action('lookup', async () => {
-      const key = byId('lookup-key').value;
+      const text = byId('lookup-key').value;
       byId('lookup-result').hidden = true;
-      if (!key.length) throw new Error('Escribe una key para consultar.');
-      if (!key.trim() || key.length > 200) throw new Error('Escribe una clave de hasta 200 caracteres.');
-      feedback('lookup-feedback', 'Consultando el diccionario…');
-      const { index } = await loadDictionary();
-      showSuggestions([]);
-      const result = findEntry(index, key) || generateEntry(index, key);
-      if (!result) {
-        const near = nearestKeys(index, key);
-        showSuggestions(near);
-        const amount = amountFrom(key);
-        const outOfRange = amount !== null && amountBase(index) && (amount < MIN_AMOUNT || amount > MAX_AMOUNT);
-        feedback('lookup-feedback', outOfRange ? `Solo se generan montos entre $${formatAmount(MIN_AMOUNT)} y $${formatAmount(MAX_AMOUNT)}. Los más cercanos son:` : near.length ? 'No se encontró esa key. Las más cercanas son:' : 'No se encontró esa key. Comprueba que coincida exactamente con el archivo.');
-        return;
+      if (!text.trim()) throw new Error('Escribe un monto.');
+      const amount = amountFrom(text);
+      if (amount === null) throw new Error('Escribe el monto solo con números, por ejemplo 150000.');
+      if (amount < MIN_AMOUNT || amount > MAX_AMOUNT) {
+        throw new Error(`Solo se generan montos entre $${formatAmount(MIN_AMOUNT)} y $${formatAmount(MAX_AMOUNT)}.`);
       }
-      byId('lookup-key').value = result.key;
-      const blob = await renderQrCard(result.value);
+      feedback('lookup-feedback', 'Generando el QR…');
+      const base = await loadBase();
+      const key = formatAmount(amount);
+      const blob = await renderQrCard(buildCode(base.fields, amount));
       const image = byId('result-image');
       if (image.src.startsWith('blob:')) URL.revokeObjectURL(image.src);
       image.src = URL.createObjectURL(blob);
-      lastResult = { key: result.key, blob };
-      byId('result-key').textContent = String(result.key ?? key);
+      lastResult = { key, blob };
+      byId('lookup-key').value = key;
+      byId('result-key').textContent = key;
       byId('lookup-result').hidden = false;
       byId('lookup-key').blur();
       keepAwake();
       requestAnimationFrame(() => byId('lookup-result').scrollIntoView({ behavior: 'smooth', block: 'start' }));
       feedback('share-feedback', '');
-      feedback('lookup-feedback', result.generated
-        ? `QR verificado para $${result.key}. Este monto no está en el diccionario: se generó con el mismo formato.`
-        : 'QR verificado. Esta es la imagen que se enviará por WhatsApp.', 'success');
+      feedback('lookup-feedback', `QR verificado para $${key}.`, 'success');
     }, 'lookup-feedback');
   });
 
@@ -496,12 +347,45 @@
     feedback('share-feedback', 'Imagen descargada.', 'success');
   }, 'share-feedback'));
 
-  // ---------- Pantalla de contraseña ----------
+  // ---------- Contraseña de acceso (en el sitio solo se publica su hash) ----------
+  const fromBase64 = (text) => Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
+  const toBase64 = (bytes) => btoa(String.fromCharCode(...bytes));
+
+  async function fetchAccess() {
+    try {
+      const response = await fetch(ACCESS_URL);
+      if (!response.ok) return null;
+      const file = await response.json();
+      return file.v === 1 && file.salt && file.hash && file.iterations ? file : null;
+    } catch { return null; }
+  }
+
+  async function hashPassword(password, access) {
+    const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: fromBase64(access.salt), iterations: access.iterations, hash: 'SHA-256' }, material, 256);
+    return toBase64(new Uint8Array(bits));
+  }
+
+  async function isUnlocked() {
+    const access = await fetchAccess();
+    // Sin archivo de contraseña (aún no configurada): la app queda abierta.
+    if (!access) return true;
+    return (await readRecord(ACCESS_ID))?.hash === access.hash;
+  }
+
+  async function unlock(password) {
+    const access = await fetchAccess();
+    if (!access) throw new Error('No se pudo leer la configuración de la contraseña. Abre la app con internet.');
+    if (await hashPassword(password, access) !== access.hash) throw new Error('Contraseña incorrecta.');
+    await saveRecord(ACCESS_ID, { hash: access.hash, savedAt: new Date().toISOString() });
+    if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
+  }
+
   async function start() {
     const open = await isUnlocked();
     byId('lock-card').hidden = open;
     byId('main-cards').hidden = !open;
-    if (open) { await showDictionaryInfo(); await updateKeyboard(); }
+    if (open) await showBaseInfo();
   }
 
   const ATTEMPTS_KEY = 'mi-bot-intentos';
@@ -521,7 +405,7 @@
       if (!password) throw new Error('Escribe la contraseña.');
       const wait = Math.ceil((attempts().until - Date.now()) / 1000);
       if (wait > 0) throw new Error(`Demasiados intentos. Espera ${wait} s y vuelve a probar.`);
-      feedback('lock-feedback', 'Abriendo el diccionario…');
+      feedback('lock-feedback', 'Abriendo…');
       try { await unlock(password); }
       catch (error) {
         if (error.message === 'Contraseña incorrecta.') {
@@ -540,13 +424,13 @@
   });
 
   byId('lock-now-button').addEventListener('click', () => action('lock', async () => {
-    await Promise.all([deleteRecord(ACCESS_ID), deleteLocal()]);
-    dictionaryPromise = null;
+    await Promise.all([deleteRecord(ACCESS_ID), deleteRecord(BASE_ID), deleteRecord('local')]);
+    basePromise = null;
     lastResult = null;
     byId('lookup-result').hidden = true;
-    feedback('upload-feedback', '');
+    feedback('base-feedback', '');
     await start();
-  }, 'upload-feedback'));
+  }, 'base-feedback'));
 
   // ---------- Estado de conexión y service worker ----------
   function updateOnlineLabel() {

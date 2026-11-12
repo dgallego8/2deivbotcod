@@ -30,6 +30,7 @@ En el servicio, sección **Variables**, añade:
 |---|---|
 | `PANEL_USER` | Un usuario, por ejemplo `santi` |
 | `PANEL_PASSWORD` | Una contraseña nueva de al menos 16 caracteres |
+| `ALLOWED_NUMBER` | Tu número de WhatsApp Business con código de país, por ejemplo `573001234567`. Solo se usa en el primer arranque; después se cambia desde el panel |
 
 No pongas la contraseña en GitHub. Las demás rutas necesarias ya están definidas en el Dockerfile.
 En **Settings → Networking → Generate Domain**, genera un dominio público. Si pregunta por el puerto, usa `8080`.
@@ -41,7 +42,7 @@ Aplica los cambios y vuelve a desplegar el servicio.
 Primero pausa o apaga el bot local desde su panel para evitar que ambos respondan.
 Abre el dominio de Railway. El navegador pedirá el usuario y la contraseña que configuraste.
 Escanea el QR desde **WhatsApp personal → Dispositivos vinculados → Vincular dispositivo**.
-Cuando diga **Conectado**, envía `150.000` desde Business `+573024849179` al personal `+573155901177`.
+Cuando diga **Conectado**, envía `150.000` desde tu WhatsApp Business a tu WhatsApp personal.
 Debe responder con la plantilla y el QR correspondiente. Esta vinculación es nueva; no se copió la sesión de tu PC.
 Si Railway limita memoria y Chromium no inicia, revisa los logs y el límite disponible de tu plan.
 
