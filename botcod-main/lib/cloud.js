@@ -41,7 +41,10 @@ async function bootstrap(root, cloud) {
   try { config = await loadConfig(configPath); }
   catch (error) {
     if (error.code !== 'ENOENT') throw error;
-    config = { dictionaryPath, mode: 'allowed', allowedNumbers: ['573024849179'], enabled: true, port: cloud.port };
+    // Primer arranque: el número autorizado viene de la variable ALLOWED_NUMBER, no del código.
+    const allowed = (process.env.ALLOWED_NUMBER || '').replace(/[\s()+-]/g, '');
+    if (!/^[1-9]\d{6,14}$/.test(allowed)) throw new Error('Define ALLOWED_NUMBER en Railway con el número de Business autorizado, con código de país.');
+    config = { dictionaryPath, mode: 'allowed', allowedNumbers: [allowed], enabled: true, port: cloud.port };
   }
   config = await saveConfig(configPath, { ...config, dictionaryPath, port: cloud.port });
   await new Dictionary(dictionaryPath).read();
