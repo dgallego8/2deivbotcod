@@ -51,7 +51,7 @@
         <form id="lookup-form">
           <label for="lookup-key">Monto</label>
           <div class="lookup-row"><input id="lookup-key" name="key" type="text" inputmode="numeric" value="150.000" autocomplete="off" spellcheck="false" required><button id="lookup-button" type="submit" class="button button-primary">Consultar</button></div>
-          <p class="field-help">Cualquier valor entre $50.000 y $3.000.000. Puedes omitir los puntos: <code>150500</code> genera <code>150.500</code>, y un número corto se entiende en miles (<code>150</code> es <code>150.000</code>).</p>
+          <p class="field-help">Cualquier valor entre $1.000 y $3.000.000. Puedes omitir los puntos: <code>150500</code> genera <code>150.500</code>, y un número corto se entiende en miles (<code>150</code> es <code>150.000</code>).</p>
         </form>
         <p id="lookup-feedback" class="feedback" role="status" aria-live="polite">Escribe un monto para ver su QR.</p>
         <div id="lookup-result" class="result" hidden><div class="result-heading"><span>QR GENERADO</span><code id="result-key"></code></div><img id="result-image" alt="Plantilla con el QR del monto"><div class="result-actions"><button id="share-button" type="button" class="button button-primary">Compartir imagen</button><p id="share-feedback" class="feedback" role="status" aria-live="polite"></p></div></div>

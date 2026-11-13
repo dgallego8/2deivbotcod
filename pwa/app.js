@@ -14,7 +14,9 @@
   // Nombre del comercio, escrito por la app debajo de «PAGAS A».
   const NAME = { centerX: 450, baseline: 1140, maxWidth: 600, size: 44, minSize: 24, color: '#2a0b52' };
   const FONT_URL = 'assets/fonts/montserrat-700.woff2';
-  const MIN_AMOUNT = 50000;
+  const MIN_AMOUNT = 1000;
+  // Un número menor que esto se entiende en miles: "150" es 150.000.
+  const SHORTHAND_BELOW = 1000;
   const MAX_AMOUNT = 3000000;
   const pending = new Set();
   let basePromise = null;
@@ -234,7 +236,7 @@
     const digits = onlyDigits(text).replace(/^0+/, '');
     if (!digits || digits.length > 9) return null;
     const amount = Number(digits);
-    return amount < MIN_AMOUNT && amount * 1000 <= MAX_AMOUNT ? amount * 1000 : amount;
+    return amount < SHORTHAND_BELOW && amount * 1000 <= MAX_AMOUNT ? amount * 1000 : amount;
   }
 
   // ---------- Plantilla + QR ----------
