@@ -16,7 +16,13 @@
 .suggestions .button{font-family:Consolas,"Courier New",monospace}
 #lookup-result{scroll-margin-top:12px}
 /* iOS amplía la página al enfocar campos con letra menor de 16px. */
-@media(pointer:coarse){input{font-size:16px}}
+@media(pointer:coarse){input,select{font-size:16px}}
 /* App instalada: deja libre la barra de estado y el borde inferior. */
 @media(display-mode:standalone){.shell{padding-top:max(24px,env(safe-area-inset-top));padding-bottom:max(25px,env(safe-area-inset-bottom))}}
 .settings-card .file-icon{font-family:inherit;font-size:.62rem;letter-spacing:.04em}
+select{display:block;width:100%;border:1px solid #dce3d5;background:#fffefa;border-radius:9px;padding:11px 12px;color:#294536;font:inherit;font-size:.87rem}
+select:focus{outline:3px solid #d6e6cc;border-color:#729575}
+.account-picker[hidden]{display:none}
+#account-list .dictionary-info{margin:12px 0}
+.account-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.account-actions .button{min-height:34px;padding:7px 12px}
