@@ -14,7 +14,9 @@
   // Nombre del comercio, escrito por la app debajo de «PAGAS A».
   const NAME = { centerX: 450, baseline: 1140, maxWidth: 600, size: 44, minSize: 24, color: '#2a0b52' };
   const FONT_URL = 'assets/fonts/montserrat-700.woff2';
-  const MIN_AMOUNT = 50000;
+  const MIN_AMOUNT = 1000;
+  // Un número menor que esto se entiende en miles: "150" es 150.000.
+  const SHORTHAND_BELOW = 1000;
   const MAX_AMOUNT = 3000000;
   const pending = new Set();
   let basePromise = null;
@@ -110,12 +112,19 @@
     if (!last || last.id !== '63' || last.value.length !== 4) throw new Error('El código no termina con su campo de verificación.');
     if (crc16(payload.slice(0, -4)) !== last.value.toUpperCase()) throw new Error('El código está incompleto o alterado: su verificación no coincide.');
     if (!fields.some((field) => field.id === '54')) throw new Error('El código no tiene un monto que se pueda cambiar. Usa uno generado con un valor.');
-    return { payload, fields, merchant: fields.find((field) => field.id === '59')?.value || 'Comercio sin nombre' };
+    return { payload, fields, merchant: fields.find((field) => field.id === '59')?.value.trim() || 'Comercio sin nombre' };
+  }
+
+  // El monto se escribe con el mismo formato que trae el código base: si el original lleva
+  // decimales ("970000.00"), el nuevo también ("150000.00"); si no ("150000"), sin ellos.
+  function amountText(fields, amount) {
+    const original = fields.find((field) => field.id === '54')?.value || '';
+    return /^\d+\.\d{2}$/.test(original) ? `${amount}.00` : String(amount);
   }
 
   function buildCode(fields, amount) {
     const body = fields.slice(0, -1).map((field) => {
-      const value = field.id === '54' ? String(amount) : field.value;
+      const value = field.id === '54' ? amountText(fields, amount) : field.value;
       return field.id + String(value.length).padStart(2, '0') + value;
     }).join('') + '6304';
     return body + crc16(body);
@@ -227,7 +236,7 @@
     const digits = onlyDigits(text).replace(/^0+/, '');
     if (!digits || digits.length > 9) return null;
     const amount = Number(digits);
-    return amount < MIN_AMOUNT && amount * 1000 <= MAX_AMOUNT ? amount * 1000 : amount;
+    return amount < SHORTHAND_BELOW && amount * 1000 <= MAX_AMOUNT ? amount * 1000 : amount;
   }
 
   // ---------- Plantilla + QR ----------
