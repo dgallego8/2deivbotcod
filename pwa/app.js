@@ -200,7 +200,15 @@
           try { response = await fetch(BASE_URL); }
           catch { throw new Error('No se pudo leer el código base. Abre la app una vez con internet para guardarlo.'); }
           if (!response.ok) throw new Error('No se encontró el código base publicado (pwa/data/codigo-base.txt).');
-          list.push({ id: PUBLISHED, source: 'published', ...parseBase(await response.text()) });
+          // El archivo publicado tiene un código por línea: cada línea es una cuenta.
+          const lines = (await response.text()).split(/\r?\n/).filter((line) => line.trim());
+          if (!lines.length) throw new Error('El código base publicado está vacío.');
+          let firstError = null;
+          lines.forEach((line, position) => {
+            try { list.push({ id: position === 0 ? PUBLISHED : `${PUBLISHED}-${position}`, source: 'published', ...parseBase(line) }); }
+            catch (error) { firstError = firstError || error; }
+          });
+          if (!list.length) throw firstError;
         } catch (error) { publishedError = error; }
         for (const item of record.saved) {
           try { list.push({ id: item.id, source: 'local', savedAt: item.savedAt, ...parseBase(item.code) }); }
