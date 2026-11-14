@@ -49,6 +49,7 @@
         <h2 id="test-title">Escribe el monto</h2>
         <p class="muted">Se genera la imagen con el QR de pago por ese valor. No envía mensajes.</p>
         <form id="lookup-form">
+          <div id="account-picker" class="account-picker" hidden><label for="account-select">Cobrar a</label><select id="account-select"></select></div>
           <label for="lookup-key">Monto</label>
           <div class="lookup-row"><input id="lookup-key" name="key" type="text" inputmode="numeric" value="150.000" autocomplete="off" spellcheck="false" required><button id="lookup-button" type="submit" class="button button-primary">Consultar</button></div>
           <p class="field-help">Cualquier valor entre $1.000 y $3.000.000. Puedes omitir los puntos: <code>150500</code> genera <code>150.500</code>, y un número corto se entiende en miles (<code>150</code> es <code>150.000</code>).</p>
@@ -60,17 +61,16 @@
       <section class="card settings-card" aria-labelledby="settings-title">
         <div class="card-top"><span class="step-number">02</span><p class="eyebrow">TU CÓDIGO BASE</p></div>
         <h2 id="settings-title">A quién se le paga</h2>
-        <p class="muted">Todos los QR salen de un único código base; la app solo le cambia el monto. Puedes reemplazarlo por otro cuando quieras.</p>
-        <div class="dictionary-info"><span class="file-icon" aria-hidden="true">QR</span><div><strong id="base-name">Leyendo el código base…</strong><span id="base-detail">Código base publicado en GitHub</span></div></div>
+        <p class="muted">Cada QR sale de un código de pago; la app solo le cambia el monto. Puedes guardar varias cuentas y elegir con cuál cobrar.</p>
+        <div id="account-list"></div>
         <form id="base-form">
-          <label for="base-code">Cambiar el código base</label>
+          <label for="base-code">Agregar otra cuenta</label>
           <input id="base-code" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Pega aquí el texto del código QR" required>
           <p class="field-help">Pega el texto de un código de pago, o elige una foto o captura de un QR y la app lo lee. Debe ser un QR con monto.</p>
           <label for="base-image">Leer desde una imagen</label>
           <input id="base-image" type="file" accept="image/*">
           <div class="connection-actions upload-actions">
-            <button id="base-button" type="submit" class="button button-secondary">Usar este código</button>
-            <button id="reset-button" type="button" class="button button-quiet" hidden>Volver al código publicado</button>
+            <button id="base-button" type="submit" class="button button-secondary">Guardar cuenta</button>
           </div>
           <p id="base-feedback" class="feedback" role="status" aria-live="polite"></p>
         </form>

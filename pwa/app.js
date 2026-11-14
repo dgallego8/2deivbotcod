@@ -19,7 +19,7 @@
   const SHORTHAND_BELOW = 1000;
   const MAX_AMOUNT = 3000000;
   const pending = new Set();
-  let basePromise = null;
+  let accountsPromise = null;
   let templatePromise = null;
   let lastResult = null;
 
@@ -33,8 +33,7 @@
     byId('lookup-button').disabled = pending.has('lookup');
     byId('lookup-button').textContent = pending.has('lookup') ? 'Generando…' : 'Consultar';
     byId('base-button').disabled = pending.has('base');
-    byId('base-button').textContent = pending.has('base') ? 'Guardando…' : 'Usar este código';
-    byId('reset-button').disabled = pending.has('base');
+    byId('base-button').textContent = pending.has('base') ? 'Guardando…' : 'Guardar cuenta';
     byId('share-button').disabled = pending.has('share');
     byId('lock-button').disabled = pending.has('unlock');
     byId('lock-button').textContent = pending.has('unlock') ? 'Abriendo…' : 'Entrar';
@@ -52,7 +51,8 @@
   // ---------- Datos guardados en este dispositivo (IndexedDB) ----------
   const DB_NAME = 'mi-bot';
   const STORE = 'dictionary';
-  const BASE_ID = 'base';
+  const BASE_ID = 'base'; // versión anterior (un solo código); se migra a ACCOUNTS_ID
+  const ACCOUNTS_ID = 'accounts';
   const ACCESS_ID = 'access';
 
   function openDb() {
@@ -93,26 +93,46 @@
     return crc.toString(16).toUpperCase().padStart(4, '0');
   }
 
-  // Devuelve los campos del código o lanza un error que explica qué está mal.
-  function parseBase(text) {
-    const payload = String(text).replace(/^﻿/, '').trim();
-    if (!payload) throw new Error('El código base está vacío.');
+  // Revisa un código y dice hasta dónde llegó: 0 estructura, 1 final, 2 verificación, 3 monto, 4 correcto.
+  function analyze(payload) {
     const fields = [];
     let position = 0;
     while (position < payload.length) {
       const id = payload.slice(position, position + 2);
-      const length = Number(payload.slice(position + 2, position + 4));
-      if (!/^\d{2}$/.test(id) || !/^\d{2}$/.test(payload.slice(position + 2, position + 4)) || position + 4 + length > payload.length) {
-        throw new Error('Ese texto no es un código de pago QR válido.');
+      const lengthText = payload.slice(position + 2, position + 4);
+      const length = Number(lengthText);
+      if (!/^\d{2}$/.test(id) || !/^\d{2}$/.test(lengthText) || position + 4 + length > payload.length) {
+        return { stage: 0, message: 'Ese texto no es un código de pago QR válido. Revisa que esté completo y sin espacios ni saltos de línea de más.' };
       }
       fields.push({ id, value: payload.slice(position + 4, position + 4 + length) });
       position += 4 + length;
     }
     const last = fields[fields.length - 1];
-    if (!last || last.id !== '63' || last.value.length !== 4) throw new Error('El código no termina con su campo de verificación.');
-    if (crc16(payload.slice(0, -4)) !== last.value.toUpperCase()) throw new Error('El código está incompleto o alterado: su verificación no coincide.');
-    if (!fields.some((field) => field.id === '54')) throw new Error('El código no tiene un monto que se pueda cambiar. Usa uno generado con un valor.');
-    return { payload, fields, merchant: fields.find((field) => field.id === '59')?.value.trim() || 'Comercio sin nombre' };
+    if (!last || last.id !== '63' || last.value.length !== 4) return { stage: 1, message: 'El código no termina con su campo de verificación.' };
+    if (crc16(payload.slice(0, -4)) !== last.value.toUpperCase()) {
+      return { stage: 2, message: 'El código está incompleto o alterado: su verificación no coincide. Léelo desde la imagen del QR para evitar errores al copiar.' };
+    }
+    if (!fields.some((field) => field.id === '54')) return { stage: 3, message: 'El código no tiene un monto que se pueda cambiar. Usa uno generado con un valor.' };
+    return { stage: 4, payload, fields };
+  }
+
+  // Devuelve los campos del código o lanza un error que explica qué está mal.
+  function parseBase(text) {
+    const payload = String(text).replace(/^\uFEFF/, '').trim();
+    if (!payload) throw new Error('El código está vacío.');
+    let best = analyze(payload);
+    if (best.stage < 4 && /\s/.test(payload)) {
+      // Un espacio o salto de línea de más (típico al copiar) se prueba quitándolo; solo se
+      // acepta si el código resultante pasa la verificación.
+      for (let index = 0; index < payload.length; index++) {
+        if (!/\s/.test(payload[index])) continue;
+        const attempt = analyze(payload.slice(0, index) + payload.slice(index + 1));
+        if (attempt.stage === 4) { best = attempt; break; }
+        if (attempt.stage > best.stage) best = attempt;
+      }
+    }
+    if (best.stage < 4) throw new Error(best.message);
+    return { payload: best.payload, fields: best.fields, merchant: best.fields.find((field) => field.id === '59')?.value.trim() || 'Comercio sin nombre' };
   }
 
   // El monto se escribe con el mismo formato que trae el código base: si el original lleva
@@ -130,48 +150,166 @@
     return body + crc16(body);
   }
 
-  function loadBase() {
-    if (!basePromise) {
-      basePromise = (async () => {
-        const local = await readRecord(BASE_ID);
-        if (local?.code) {
-          try { return { ...parseBase(local.code), source: 'local', savedAt: local.savedAt }; }
-          catch { /* Si lo guardado se dañó, usa el publicado. */ }
-        }
-        let response;
-        try { response = await fetch(BASE_URL); }
-        catch { throw new Error('No se pudo leer el código base. Abre la app una vez con internet para guardarlo.'); }
-        if (!response.ok) throw new Error('No se encontró el código base publicado (pwa/data/codigo-base.txt).');
-        return { ...parseBase(await response.text()), source: 'published' };
-      })();
-      basePromise.catch(() => { basePromise = null; });
+  // ---------- Cuentas (códigos base) ----------
+  // La cuenta publicada (pwa/data/codigo-base.txt) siempre está; además se pueden guardar otras
+  // en este dispositivo y elegir con cuál cobrar.
+  const PUBLISHED = 'published';
+
+  function subfield(fields, id, subId) {
+    const field = fields.find((item) => item.id === id);
+    if (!field) return '';
+    let position = 0;
+    while (position + 4 <= field.value.length) {
+      const length = Number(field.value.slice(position + 2, position + 4));
+      if (!Number.isInteger(length)) return '';
+      if (field.value.slice(position, position + 2) === subId) return field.value.slice(position + 4, position + 4 + length);
+      position += 4 + length;
     }
-    return basePromise;
+    return '';
+  }
+
+  // Nombre del comercio y los últimos 4 dígitos de su cuenta, para distinguir cuentas con el mismo nombre.
+  function accountLabel(account) {
+    const tag = onlyDigits(subfield(account.fields, '50', '01')).slice(-4);
+    return tag ? `${account.merchant} · …${tag}` : account.merchant;
+  }
+
+  async function readAccountsRecord() {
+    let record = await readRecord(ACCOUNTS_ID);
+    if (!record) {
+      record = { saved: [], selected: PUBLISHED };
+      const old = await readRecord(BASE_ID); // versión de un solo código
+      if (old?.code) {
+        const id = `cuenta-${Date.now()}`;
+        record = { saved: [{ id, code: old.code, savedAt: old.savedAt }], selected: id };
+        await saveRecord(ACCOUNTS_ID, record);
+      }
+      if (old) await deleteRecord(BASE_ID);
+    }
+    return record;
+  }
+
+  function loadAccounts() {
+    if (!accountsPromise) {
+      accountsPromise = (async () => {
+        const record = await readAccountsRecord();
+        const list = [];
+        let publishedError = null;
+        try {
+          let response;
+          try { response = await fetch(BASE_URL); }
+          catch { throw new Error('No se pudo leer el código base. Abre la app una vez con internet para guardarlo.'); }
+          if (!response.ok) throw new Error('No se encontró el código base publicado (pwa/data/codigo-base.txt).');
+          list.push({ id: PUBLISHED, source: 'published', ...parseBase(await response.text()) });
+        } catch (error) { publishedError = error; }
+        for (const item of record.saved) {
+          try { list.push({ id: item.id, source: 'local', savedAt: item.savedAt, ...parseBase(item.code) }); }
+          catch { /* Una cuenta guardada que se dañó se omite. */ }
+        }
+        if (!list.length) throw publishedError || new Error('No hay ninguna cuenta disponible.');
+        for (const account of list) account.label = accountLabel(account);
+        const current = list.find((account) => account.id === record.selected) || list[0];
+        return { list, current, record };
+      })();
+      accountsPromise.catch(() => { accountsPromise = null; });
+    }
+    return accountsPromise;
+  }
+
+  async function loadBase() { return (await loadAccounts()).current; }
+
+  async function writeAccounts(record) {
+    await saveRecord(ACCOUNTS_ID, record);
+    accountsPromise = null;
+    byId('lookup-result').hidden = true;
+    await showBaseInfo();
+  }
+
+  async function selectAccount(id) {
+    const { record } = await loadAccounts();
+    await writeAccounts({ ...record, selected: id });
+  }
+
+  async function removeAccount(id) {
+    const { record } = await loadAccounts();
+    await writeAccounts({ saved: record.saved.filter((item) => item.id !== id), selected: record.selected === id ? PUBLISHED : record.selected });
+  }
+
+  function accountButton(text, label, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'button button-quiet';
+    button.textContent = text;
+    button.setAttribute('aria-label', `${text} ${label}`);
+    button.addEventListener('click', onClick);
+    return button;
+  }
+
+  function accountRow(account, selected) {
+    const row = document.createElement('div');
+    row.className = 'dictionary-info';
+    const icon = document.createElement('span');
+    icon.className = 'file-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = 'QR';
+    const body = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = account.label;
+    const detail = document.createElement('span');
+    const date = new Date(account.savedAt);
+    const when = account.source === 'local' && !Number.isNaN(date.getTime()) ? ` · ${date.toLocaleDateString('es-CO')}` : '';
+    detail.textContent = (account.source === 'published' ? 'Publicada en GitHub' : `Guardada en este dispositivo${when}`) + (selected ? ' · En uso' : '');
+    const actions = document.createElement('div');
+    actions.className = 'account-actions';
+    if (!selected) actions.append(accountButton('Usar', account.label, () => action('base', () => selectAccount(account.id), 'base-feedback')));
+    if (account.source === 'local') {
+      actions.append(accountButton('Quitar', account.label, () => action('base', async () => {
+        if (!window.confirm(`¿Quitar «${account.label}» de este dispositivo?`)) return;
+        await removeAccount(account.id);
+        feedback('base-feedback', 'Cuenta quitada.', 'success');
+      }, 'base-feedback')));
+    }
+    body.append(name, detail, actions);
+    row.append(icon, body);
+    return row;
   }
 
   async function showBaseInfo() {
-    const info = byId('base-name').closest('.dictionary-info');
+    const box = byId('account-list');
+    const picker = byId('account-picker');
     try {
-      const base = await loadBase();
-      byId('base-name').textContent = base.merchant;
-      if (base.source === 'local') {
-        const date = new Date(base.savedAt);
-        const when = Number.isNaN(date.getTime()) ? '' : ` · ${date.toLocaleString('es-CO')}`;
-        byId('base-detail').textContent = `Código cambiado en este dispositivo${when}`;
-      } else {
-        byId('base-detail').textContent = 'Código base publicado en GitHub';
-      }
-      byId('reset-button').hidden = base.source !== 'local';
-      info.dataset.error = 'false';
+      const { list, current } = await loadAccounts();
+      box.replaceChildren(...list.map((account) => accountRow(account, account.id === current.id)));
+      const select = byId('account-select');
+      select.replaceChildren(...list.map((account) => {
+        const option = document.createElement('option');
+        option.value = account.id;
+        option.textContent = account.label;
+        return option;
+      }));
+      select.value = current.id;
+      picker.hidden = list.length < 2;
     } catch (error) {
-      byId('base-name').textContent = 'No se pudo leer el código base';
-      byId('base-detail').textContent = error.message;
-      byId('reset-button').hidden = true;
-      info.dataset.error = 'true';
+      const row = document.createElement('div');
+      row.className = 'dictionary-info';
+      row.dataset.error = 'true';
+      const body = document.createElement('div');
+      const name = document.createElement('strong');
+      name.textContent = 'No se pudo leer el código base';
+      const detail = document.createElement('span');
+      detail.textContent = error.message;
+      body.append(name, detail);
+      row.append(body);
+      box.replaceChildren(row);
+      picker.hidden = true;
     }
   }
 
-  // ---------- Cambiar el código base ----------
+  byId('account-select').addEventListener('change', (event) => {
+    action('base', () => selectAccount(event.target.value), 'lookup-feedback');
+  });
+
+  // ---------- Agregar una cuenta ----------
   async function decodeImageFile(file) {
     const url = URL.createObjectURL(file);
     try {
@@ -204,30 +342,27 @@
     const code = await decodeImageFile(file);
     const base = parseBase(code);
     byId('base-code').value = base.payload;
-    feedback('base-feedback', `QR leído: ${base.merchant}. Pulsa «Usar este código» para guardarlo.`, 'success');
+    feedback('base-feedback', `QR leído: ${base.merchant}. Pulsa «Guardar cuenta» para añadirla.`, 'success');
   }, 'base-feedback').finally(() => { byId('base-image').value = ''; }));
 
   byId('base-form').addEventListener('submit', (event) => {
     event.preventDefault();
     action('base', async () => {
       const base = parseBase(byId('base-code').value);
-      await saveRecord(BASE_ID, { code: base.payload, savedAt: new Date().toISOString() });
-      if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
-      basePromise = null;
+      const { list, record } = await loadAccounts();
+      const existing = list.find((account) => account.payload === base.payload);
       byId('base-code').value = '';
-      byId('lookup-result').hidden = true;
-      await showBaseInfo();
-      feedback('base-feedback', `Código guardado en este dispositivo: ${base.merchant}. Los QR nuevos usarán este código.`, 'success');
+      if (existing) {
+        await writeAccounts({ ...record, selected: existing.id });
+        feedback('base-feedback', `Esa cuenta ya estaba guardada (${existing.label}). Ahora está en uso.`, 'success');
+        return;
+      }
+      const id = `cuenta-${Date.now()}`;
+      await writeAccounts({ saved: [...record.saved, { id, code: base.payload, savedAt: new Date().toISOString() }], selected: id });
+      if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
+      feedback('base-feedback', `Cuenta guardada: ${base.merchant}. Los QR nuevos se generan con ella; puedes cambiar de cuenta arriba, en «Cobrar a».`, 'success');
     }, 'base-feedback');
   });
-
-  byId('reset-button').addEventListener('click', () => action('base', async () => {
-    await deleteRecord(BASE_ID);
-    basePromise = null;
-    byId('lookup-result').hidden = true;
-    await showBaseInfo();
-    feedback('base-feedback', 'Se volvió a usar el código base publicado.', 'success');
-  }, 'base-feedback'));
 
   // ---------- Monto ----------
   // Acepta "150000", "150.500", "$ 99,999" o "75 mil". Un número corto se entiende en miles.
@@ -466,8 +601,8 @@
   });
 
   byId('lock-now-button').addEventListener('click', () => action('lock', async () => {
-    await Promise.all([deleteRecord(ACCESS_ID), deleteRecord(BASE_ID), deleteRecord('local')]);
-    basePromise = null;
+    await Promise.all([deleteRecord(ACCESS_ID), deleteRecord(ACCOUNTS_ID), deleteRecord(BASE_ID), deleteRecord('local')]);
+    accountsPromise = null;
     lastResult = null;
     byId('lookup-result').hidden = true;
     feedback('base-feedback', '');
