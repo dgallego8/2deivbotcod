@@ -168,10 +168,29 @@
     return '';
   }
 
-  // Nombre del comercio y los últimos 4 dígitos de su cuenta, para distinguir cuentas con el mismo nombre.
-  function accountLabel(account) {
+  // Comercio y los últimos 4 dígitos de su cuenta (para el detalle y para cuentas sin alias).
+  function accountDetail(account) {
     const tag = onlyDigits(subfield(account.fields, '50', '01')).slice(-4);
     return tag ? `${account.merchant} · …${tag}` : account.merchant;
+  }
+
+  // Lo que se muestra en el selector y en la lista: el alias, o el detalle si no tiene.
+  function accountLabel(account) {
+    return account.alias || accountDetail(account);
+  }
+
+  // El alias es solo para quien usa la app: no aparece en la imagen del QR.
+  function cleanAlias(text) {
+    const alias = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!alias) throw new Error('Escribe un alias para reconocer la cuenta.');
+    if (alias.length > 30) throw new Error('El alias puede tener hasta 30 caracteres.');
+    return alias;
+  }
+
+  function assertAliasFree(list, alias, exceptId) {
+    if (list.some((account) => account.id !== exceptId && account.alias && account.alias.toLowerCase() === alias.toLowerCase())) {
+      throw new Error(`Ya hay una cuenta con el alias «${alias}». Elige otro.`);
+    }
   }
 
   async function readAccountsRecord() {
@@ -205,13 +224,16 @@
           if (!lines.length) throw new Error('El código base publicado está vacío.');
           let firstError = null;
           lines.forEach((line, position) => {
-            try { list.push({ id: position === 0 ? PUBLISHED : `${PUBLISHED}-${position}`, source: 'published', ...parseBase(line) }); }
+            // Formato de cada línea: «alias | código» (el alias es opcional).
+            const bar = line.indexOf('|');
+            const alias = bar === -1 ? '' : line.slice(0, bar).replace(/\s+/g, ' ').trim();
+            try { list.push({ id: position === 0 ? PUBLISHED : `${PUBLISHED}-${position}`, source: 'published', alias, ...parseBase(bar === -1 ? line : line.slice(bar + 1)) }); }
             catch (error) { firstError = firstError || error; }
           });
           if (!list.length) throw firstError;
         } catch (error) { publishedError = error; }
         for (const item of record.saved) {
-          try { list.push({ id: item.id, source: 'local', savedAt: item.savedAt, ...parseBase(item.code) }); }
+          try { list.push({ id: item.id, source: 'local', savedAt: item.savedAt, alias: item.alias || '', ...parseBase(item.code) }); }
           catch { /* Una cuenta guardada que se dañó se omite. */ }
         }
         if (!list.length) throw publishedError || new Error('No hay ninguna cuenta disponible.');
@@ -243,6 +265,12 @@
     await writeAccounts({ saved: record.saved.filter((item) => item.id !== id), selected: record.selected === id ? PUBLISHED : record.selected });
   }
 
+  async function renameAccount(id, alias) {
+    const { list, record } = await loadAccounts();
+    assertAliasFree(list, alias, id);
+    await writeAccounts({ ...record, saved: record.saved.map((item) => (item.id === id ? { ...item, alias } : item)) });
+  }
+
   function accountButton(text, label, onClick) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -266,11 +294,17 @@
     const detail = document.createElement('span');
     const date = new Date(account.savedAt);
     const when = account.source === 'local' && !Number.isNaN(date.getTime()) ? ` · ${date.toLocaleDateString('es-CO')}` : '';
-    detail.textContent = (account.source === 'published' ? 'Publicada en GitHub' : `Guardada en este dispositivo${when}`) + (selected ? ' · En uso' : '');
+    detail.textContent = `${accountDetail(account)} · ${account.source === 'published' ? 'Publicada en GitHub' : `Guardada en este dispositivo${when}`}${selected ? ' · En uso' : ''}`;
     const actions = document.createElement('div');
     actions.className = 'account-actions';
     if (!selected) actions.append(accountButton('Usar', account.label, () => action('base', () => selectAccount(account.id), 'base-feedback')));
     if (account.source === 'local') {
+      actions.append(accountButton('Alias', account.label, () => action('base', async () => {
+        const answer = window.prompt('Alias para esta cuenta (solo lo ves tú):', account.alias || '');
+        if (answer === null) return;
+        await renameAccount(account.id, cleanAlias(answer));
+        feedback('base-feedback', 'Alias actualizado.', 'success');
+      }, 'base-feedback')));
       actions.append(accountButton('Quitar', account.label, () => action('base', async () => {
         if (!window.confirm(`¿Quitar «${account.label}» de este dispositivo?`)) return;
         await removeAccount(account.id);
@@ -356,19 +390,31 @@
   byId('base-form').addEventListener('submit', (event) => {
     event.preventDefault();
     action('base', async () => {
+      const alias = cleanAlias(byId('base-alias').value);
       const base = parseBase(byId('base-code').value);
       const { list, record } = await loadAccounts();
       const existing = list.find((account) => account.payload === base.payload);
-      byId('base-code').value = '';
       if (existing) {
-        await writeAccounts({ ...record, selected: existing.id });
-        feedback('base-feedback', `Esa cuenta ya estaba guardada (${existing.label}). Ahora está en uso.`, 'success');
+        if (existing.source === 'local') {
+          assertAliasFree(list, alias, existing.id);
+          await writeAccounts({ ...record, saved: record.saved.map((item) => (item.id === existing.id ? { ...item, alias } : item)), selected: existing.id });
+          byId('base-alias').value = '';
+          byId('base-code').value = '';
+          feedback('base-feedback', `Esa cuenta ya estaba guardada; ahora se llama «${alias}» y está en uso.`, 'success');
+        } else {
+          await writeAccounts({ ...record, selected: existing.id });
+          byId('base-code').value = '';
+          feedback('base-feedback', `Esa cuenta ya está publicada como «${existing.label}». Ahora está en uso.`, 'success');
+        }
         return;
       }
+      assertAliasFree(list, alias, null);
       const id = `cuenta-${Date.now()}`;
-      await writeAccounts({ saved: [...record.saved, { id, code: base.payload, savedAt: new Date().toISOString() }], selected: id });
+      await writeAccounts({ saved: [...record.saved, { id, code: base.payload, alias, savedAt: new Date().toISOString() }], selected: id });
       if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
-      feedback('base-feedback', `Cuenta guardada: ${base.merchant}. Los QR nuevos se generan con ella; puedes cambiar de cuenta arriba, en «Cobrar a».`, 'success');
+      byId('base-alias').value = '';
+      byId('base-code').value = '';
+      feedback('base-feedback', `Cuenta guardada como «${alias}». Los QR nuevos se generan con ella; puedes cambiar de cuenta arriba, en «Cobrar a».`, 'success');
     }, 'base-feedback');
   });
 
