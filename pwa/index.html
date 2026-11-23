@@ -64,7 +64,10 @@
         <p class="muted">Cada QR sale de un código de pago; la app solo le cambia el monto. Puedes guardar varias cuentas y elegir con cuál cobrar.</p>
         <div id="account-list"></div>
         <form id="base-form">
-          <label for="base-code">Agregar otra cuenta</label>
+          <label for="base-alias">Alias de la cuenta nueva</label>
+          <input id="base-alias" type="text" maxlength="30" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Por ejemplo: Is Mr" required>
+          <p class="field-help">Un nombre corto para reconocerla. Solo lo ves tú; no aparece en la imagen del QR.</p>
+          <label for="base-code">Código de pago</label>
           <input id="base-code" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Pega aquí el texto del código QR" required>
           <p class="field-help">Pega el texto de un código de pago, o elige una foto o captura de un QR y la app lo lee. Debe ser un QR con monto.</p>
           <label for="base-image">Leer desde una imagen</label>
